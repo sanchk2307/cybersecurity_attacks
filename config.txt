@@ -2,12 +2,12 @@
 #   Global configuration for the ML project
 # ==========================================
 
-project name : cybersecurity_attacks_project
+project name : cybersecurity_attacks
 github link : "https://github.com/KalooIna/cybersecurity_attacks/new/main"
 
 paths :
-  dataset_csv : "/Users/kalooina/Documents/Paperwork/scolar/DSTI/2025:2026/Machine Learning/cybersecurity_attacks ( project1 )/cybersecurity_attacks.csv"
-  geolite_db : "/Users/kalooina/Documents/Paperwork/scolar/DSTI/2025:2026/Machine Learning/cybersecurity_attacks ( project1 )/geolite2_db"
+  dataset_csv : "./cybersecurity_attacks.csv"
+  geolite_db : "./geolite2_db"
 
 django :
   installed_apps :
