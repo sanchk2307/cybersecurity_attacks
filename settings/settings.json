@@ -1,8 +1,8 @@
 {
 
     "steps_to_skip" : { 
-        "_step1" : false , 
-        "_step2" : false ,
-        "_step3 ": false
+        "_step1" : true , 
+        "_step2" : true ,
+        "_step3" : false
         }
 }

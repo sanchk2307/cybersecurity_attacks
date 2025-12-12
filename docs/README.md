@@ -110,7 +110,7 @@ gen-dir-repr = "pwsh -Command './generate_ascii_dir_repr.ps1 ./ -Exclude .*, __p
 | Action Taken | Team1 | | Team1 | Kaloina, Siham |
 | Firewall Logs | Team1 | | Team1 | Kaloina, Siham |
 | Log Source | Team1 | | Team1 | Kaloina, Siham |
-| Destination IP Address | Team2 | to be done| Team2 | Elly, Eugenio |
+| Destination IP Address | Team2 | No need for cleaning| Team2 | Elly, Eugenio |
 | Destination Port | Team2 | to be done | Team2 | Elly, Eugenio |
 | Packet Type | Team2 | to be done| Team2 | Elly, Eugenio |
 | Payload Data | Team2 | to be done| Team2 | Elly, Eugenio |

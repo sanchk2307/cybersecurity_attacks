@@ -124,6 +124,158 @@ class EDA():
         else:
             return None
         return coords
+    
+    def analyse_payload_column(self) -> None:
+        """
+        Analyse and validate payload data against network packet structure standards.
+
+        This method validates network packet integrity by comparing the reported
+        packet length against the calculated length based on payload data and
+        protocol-specific header sizes. It helps identify malformed or anomalous
+        packets in the dataset.
+
+        Protocol Header Sizes:
+        ----------------------
+            - UDP: 8 bytes (fixed) - Source port, dest port, length, checksum
+            - TCP: 20-60 bytes - 20 bytes minimum, up to 60 with optional fields
+            - ICMP: 8 bytes (minimum) - Type, code, checksum, and message-specific data
+
+        Ethernet Frame Composition (standard MTU 1500):
+        -----------------------------------------------
+            +------------------+
+            | Ethernet Frame   |  14 bytes (header) + 4 bytes (FCS) = 18 bytes
+            +------------------+
+            | IP Header        |  20 bytes (without options)
+            +------------------+
+            | Transport Header |  TCP: 20-60 bytes | UDP: 8 bytes | ICMP: 8 bytes
+            +------------------+
+            | Payload (data)   |  Variable size:
+            |                  |  - TCP: up to ~1442 bytes (1500 - 20 - 38 to 58)
+            |                  |  - UDP/ICMP: up to ~1454 bytes (1500 - 20 - 8 - 18)
+            +------------------+
+
+        Validation Logic:
+        -----------------
+        The method calculates the header difference as:
+            header_diff = packet_length - (payload_length + ethernet_frame + ip_header)
+
+        A valid packet should have header_diff within the expected range for its protocol.
+
+        Returns:
+            None
+
+        Side Effects:
+            - Saves analysis results to 'ds_payload_analysis.parquet' with columns:
+                - Payload Length: Character length of payload data string
+                - Header Diff: Calculated transport header size
+                - Valid Headers: Boolean indicating if header_diff is within expected range
+                - Payload Min/Max Diff: Difference from max allowed payload size
+            - Prints validation statistics to stdout
+
+        Notes:
+            - Invalid packets may indicate data corruption, truncation, or anomalies
+            - The payload data is stored as a string, so str.len() gives character count
+        """
+
+        # Extract relevant columns for payload analysis
+        df_payload_analysis = pd.DataFrame(
+            self.cybersecurity_df[["Payload Data", "Packet Length", "Packet Type", "Protocol"]]
+        )
+
+        # Maximum payload sizes per protocol (min, max) in bytes
+        # Based on standard MTU of 1500 bytes minus all headers
+        payload_data_max = {
+            'TCP': (1402, 1442),   # Range due to variable TCP header (20-60 bytes)
+            'UDP': (1454, 1454),   # Fixed: 1500 - 18 (eth) - 20 (ip) - 8 (udp)
+            'ICMP': (1454, 1454)   # Fixed: 1500 - 18 (eth) - 20 (ip) - 8 (icmp)
+        }
+
+        # Transport layer header sizes per protocol (min, max) in bytes
+        headers = {
+            'TCP': (20, 60),   # 20 bytes base + up to 40 bytes options
+            'UDP': (8, 8),     # Fixed: src_port(2) + dst_port(2) + length(2) + checksum(2)
+            'ICMP': (8, 8)     # Fixed: type(1) + code(1) + checksum(2) + header_data(4)
+        }
+
+        # Fixed header sizes (constant across all packets)
+        ethernet_frame_length = 18  # 14 bytes header + 4 bytes FCS (Frame Check Sequence)
+        ip_header_length = 20       # Standard IPv4 header without options
+
+        # Calculate payload length from the string representation
+        payload_lengths = df_payload_analysis['Payload Data'].str.len()
+        packet_lengths = df_payload_analysis['Packet Length'].astype(int)
+
+        # Calculate the implied transport header size
+        # header_diff should equal the transport layer header size if packet is valid
+        header_diff = packet_lengths - (payload_lengths + ethernet_frame_length + ip_header_length)
+
+        # Calculate how much room remains for payload vs maximum allowed
+        payload_min_diff = df_payload_analysis['Protocol'].map(
+            lambda x: payload_data_max.get(x, (0, 0))[0]
+        ) - payload_lengths
+        payload_max_diff = df_payload_analysis['Protocol'].map(
+            lambda x: payload_data_max.get(x, (0, 0))[1]
+        ) - payload_lengths
+
+        # Sum of all known fixed-size components (for debugging)
+        sum_known_part_ethernet_packet = payload_lengths + ethernet_frame_length + ip_header_length
+
+        print(f"sum of known parts of ethernet packet: {sum_known_part_ethernet_packet}")
+
+        # Insert calculated columns before 'Payload Data' for better readability
+        df_payload_analysis.insert(
+            df_payload_analysis.columns.get_loc("Payload Data"),
+            "Payload Length",
+            payload_lengths
+        )
+        df_payload_analysis.insert(
+            df_payload_analysis.columns.get_loc("Payload Data"),
+            "Header Diff",
+            header_diff
+        )
+
+        print(f"payload are: {payload_lengths}\n\n")
+        print(f"packet length are: {packet_lengths}\n\n")
+        print(f"Header diff are: {header_diff}\n\n")
+
+        # Get expected header size range for each row's protocol
+        min_headers = df_payload_analysis['Protocol'].map(lambda p: headers.get(p, (0, 0))[0])
+        max_headers = df_payload_analysis['Protocol'].map(lambda p: headers.get(p, (0, 0))[1])
+
+        # Validate: header_diff should fall within the expected range for the protocol
+        # If outside range, packet structure doesn't match expected format
+        is_valid_headers = (header_diff >= min_headers) & (header_diff <= max_headers)
+
+        # Add validation and difference columns to the analysis DataFrame
+        df_payload_analysis.insert(
+            df_payload_analysis.columns.get_loc("Payload Data"),
+            "Valid Headers",
+            is_valid_headers
+        )
+        df_payload_analysis.insert(
+            df_payload_analysis.columns.get_loc("Payload Data"),
+            "Payload Min Diff",
+            payload_min_diff
+        )
+        df_payload_analysis.insert(
+            df_payload_analysis.columns.get_loc("Payload Data"),
+            "Payload Max Diff",
+            payload_max_diff
+        )
+
+        # Report validation results - packets with valid header sizes
+        print(f"Valid packets: {len(df_payload_analysis[is_valid_headers])}")
+        print(df_payload_analysis[is_valid_headers][:])
+
+        # Identify and display packets that failed validation
+        # These may indicate data quality issues or anomalous traffic
+        invalid_headers = df_payload_analysis[~is_valid_headers]
+        print(f"Invalid packets len: {len(invalid_headers)}")
+        print(invalid_headers)
+
+        # Persist analysis results for further investigation
+        df_payload_analysis.to_parquet(self.data_dir + "ds_payload_analysis.parquet")
+
 
     def city_state_to_coords(self, cities: dict, cities_states: str) -> pd.Series:
         """
@@ -286,14 +438,14 @@ class EDA():
         # Load alternate names (this file is large, filter for India geonameids)
         india_ids = set(self.india_df['geonameid'])
 
-        # Carica alternate names con flag storico
+        # load alternate names con flag storico
         alt_names = pd.read_csv(self.data_dir + '/alternateNamesV2.txt', sep='\t', header=None,
             usecols=[1, 3, 7],
             names=['geonameid', 'alt_name', 'is_historic'],
             dtype={'is_historic': str}
         )
 
-        # Filtra per India
+        # filter per India
         alt_names = alt_names[alt_names['geonameid'].isin(india_ids)]
 
         # Crea lookup che include ANCHE i nomi storici
@@ -340,6 +492,8 @@ class EDA():
         print(missing_data_df.head())
         missing_data_df.to_parquet(str(self.data_dir) + 'missing_data.parquet')
         
+        self.cybersecurity_df.insert(self.cybersecurity_df.columns.get_loc("Geo-location Data"), "Geolocation Lat", df_geo_data["Geolocation Lat"])
+        self.cybersecurity_df.insert(self.cybersecurity_df.columns.get_loc("Geo-location Data"),"Geolocation Long", df_geo_data["Geolocation Long"])
         
         
 
@@ -533,13 +687,33 @@ class EDA():
                     self.load_file_from_step()
                     self.step_short = self.get_next_step()
                     self.run_EDA()
-        
-            case "_step3":
-                self.step_long = "Step #2 split Timestamp column"
-                self.print_step_artwork()
-                #Step3
-                
                     
+            case "_step3":
+                if not self.get_skip_step(self.step_short):
+                    self.step_long = "Step #3 count bytes in payload data and subtract it from packet length to test if gives the header length of the corresponding "
+                    self.print_step_artwork()
+                    #Step3
+                    self.analyse_payload_column()
+                    
+                    self.update_filename()
+                    
+                    print(f"Saving file {self.dsfile_relative_path}")
+
+                    self.cybersecurity_df.to_parquet( self.dsfile_relative_path)
+                    
+                    self.print_step_artwork(beginning=False)
+                    self.steps_to_skip[self.step_short] = True
+                    self.step_short = self.get_next_step()
+                    self.run_EDA()
+                else:
+                    self.steps_to_skip[self.step_short] = True
+                    self.load_file_from_step()
+                    self.step_short = self.get_next_step()
+                    self.run_EDA()
+                    
+            case _:
+                
+                print("Default case")
         
         
         tot_t = time.time()
