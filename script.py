@@ -1,38 +1,69 @@
-import numpy as np
+#%% library init
+
 import pandas as pd
-import geoip2.database
 import plotly.io
-plotly.io.renderers.default = "browser"
+import os
+os.environ[ "GDAL_LIBRARY_PATH" ] = "C:/Users/KalooIna/anaconda3/envs/cybersecurity_attacks/Library/bin/gdal311.dll" # make sure this is the name of your gdal.dll file ( rename it to appropriate version if necessary )
+import geoip2.database
+plotly.io.renderers.default = "browser" # plotly settings for browser settings
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
+from plotly.subplots import make_subplots as subp
 import random
 import django
 from django.conf import settings
+# django settings for geoIP2
 settings.configure(
-    GEOIP_PATH = "/Users/kalooina/Documents/Paperwork/scolar/DSTI/2025:2026/Machine Learning/cybersecurity_attacks ( project1 )/geolite2_db" ,
+    GEOIP_PATH = "data/geolite2_db" ,
     INSTALLED_APPS = [ "django.contrib.gis" ]
     )
 django.setup()
 from django.contrib.gis.geoip2 import GeoIP2
 geoIP = GeoIP2()
 
+# useful links
 maxmind_geoip2_db_url = "https://www.maxmind.com/en/accounts/1263991/geoip/downloads"
 geoip2_doc_url = "https://geoip2.readthedocs.io/en/latest/"
 geoip2_django_doc_url = "https://docs.djangoproject.com/en/5.2/ref/contrib/gis/geoip2/"
 
-df = pd.read_csv("/Users/kalooina/Documents/Paperwork/scolar/DSTI/2025:2026/Machine Learning/cybersecurity_attacks ( project1 )/cybersecurity_attacks.csv" )
+# loadding dataset
+df = pd.read_csv("data/cybersecurity_attacks.csv" )
 
+# transform variable to binary variables [ 0 , 1 ]
+def catvar_mapping( col_name , values , name = None) : 
+    if name is None :
+        name = values
+    elif ( len( name ) == 1 ) :
+        col_target = f"{ col_name } { name[ 0 ]}"
+        df.rename( columns = { col_name : col_target }) 
+        name = [ col_target ]
+    col = df.columns.get_loc( col_name )
+    for val , nm in zip( values , name ) :
+        if ( nm == "" ) :
+            col_target = col_name
+        elif ( len( name ) == 1 ) :
+            col_target = nm
+        else :
+            col_target = f"{ col_name } { nm }"
+            df.insert( col , col_target , value = pd.NA )
+        bully = df[ col_name ] == val
+        df.loc[ bully , col_target ] = 1
+        df.loc[ ~ bully , col_target ] = 0
+        col += 1
+        
+# pieichart generator for a column
 def piechart_col( col , names = None ) :
     if names is None :
-        fig = px.pie( df[ col ].value_counts() ,
-                     values = col ,
-                     names = df[ col ].value_counts().index )
+        fig = px.pie( 
+            values = df[ col ].value_counts() ,
+            names = df[ col ].value_counts().index ,
+            )
         fig.show()
-    else : 
-        fig = px.pie( df[ col ].value_counts() ,
-                     values = col ,
-                     names = names )
+    else :
+        fig = px.pie( 
+            values = df[ col ].value_counts() ,
+            names = names ,
+            )
         fig.show()
         
 #%% EDA
