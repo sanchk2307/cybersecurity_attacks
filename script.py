@@ -3,6 +3,7 @@
 import pandas as pd
 import plotly.io
 import os
+import numpy as np
 os.environ[ "GDAL_LIBRARY_PATH" ] = "C:/Users/KalooIna/anaconda3/envs/cybersecurity_attacks/Library/bin/gdal311.dll" # make sure this is the name of your gdal.dll file ( rename it to appropriate version if necessary )
 import geoip2.database
 plotly.io.renderers.default = "browser" # plotly settings for browser settings
@@ -71,6 +72,7 @@ def piechart_col( col , names = None ) :
 
 # transforms IP addresses to infos : longitude , latitude , country , city
 def ip_to_coords( ip_address ) :
+    print( ip_address )
     ret = pd.Series( dtype = object )
     try :
         res = geoIP.geos( ip_address ).wkt
