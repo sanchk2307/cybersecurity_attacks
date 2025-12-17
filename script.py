@@ -128,7 +128,7 @@ fig = px.histogram( df , col_name )
 fig.show()
 
 
-#%% IP address
+# IP address
 i = 2
 for destsource in [ "Source" , "Destination" ] :
     col = df.columns.get_loc( f"{ destsource } IP Address" ) + 1
@@ -281,7 +281,7 @@ def sankey_diag_IPs( ntop ) :
     return aggregIPs
 aggregIPs = sankey_diag_IPs( 10 )
 
-#%% Source Port
+# Source Port
 col_name = "Source Port ephemeral"
 ## create boolean value for ephemeral and assigned ports
 """
