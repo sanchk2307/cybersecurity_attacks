@@ -1,0 +1,1157 @@
+#%% library init
+
+import pandas as pd
+import prince
+import plotly.io
+import os
+import numpy as np
+os.environ[ "GDAL_LIBRARY_PATH" ] = "C:/Users/KalooIna/anaconda3/envs/cybersecurity_attacks/Library/bin/gdal311.dll" # make sure this is the name of your gdal.dll file ( rename it to appropriate version if necessary )
+import geoip2.database
+plotly.io.renderers.default = "browser" # plotly settings for browser settings
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots as subp
+from sklearn.metrics import matthews_corrcoef
+import random
+import django
+from django.conf import settings
+# django settings for geoIP2
+settings.configure(
+    GEOIP_PATH = "data/geolite2_db" ,
+    INSTALLED_APPS = [ "django.contrib.gis" ]
+    )
+django.setup()
+from django.contrib.gis.geoip2 import GeoIP2
+geoIP = GeoIP2()
+
+# useful links
+maxmind_geoip2_db_url = "https://www.maxmind.com/en/accounts/1263991/geoip/downloads"
+geoip2_doc_url = "https://geoip2.readthedocs.io/en/latest/"
+geoip2_django_doc_url = "https://docs.djangoproject.com/en/5.2/ref/contrib/gis/geoip2/"
+
+# loadding dataset
+# df = pd.read_csv( "data/cybersecurity_attacks.csv" )
+df = pd.read_csv( "data/df.csv" , sep = "|" )
+
+# transform categorical variable to binary variables [ 0 , 1 ]
+def catvar_mapping( col_name , values , name = None) : 
+    df1 = df.copy( deep = True )
+    if name is None :
+        name = values
+    elif ( len( name ) == 1 ) and ( name != [ "/" ]) :
+        col_target = f"{ col_name } { name[ 0 ]}"
+        df1 = df1.rename( columns = { col_name : col_target })
+        col_name = col_target
+        name = [ col_target ]
+    col = df1.columns.get_loc( col_name ) + 1
+    for val , nm in zip( values , name ) :
+        if ( nm == "/" ) :
+            col_target = col_name
+        elif ( len( name ) == 1 ) :
+            col_target = nm
+        else :
+            col_target = f"{ col_name } { nm }"
+            df1.insert( col , col_target , value = pd.NA )
+        bully = df1[ col_name ] == val
+        df1.loc[ bully , col_target ] = 1
+        df1.loc[ ~ bully , col_target ] = 0
+        col += 1
+    return df1
+        
+# pieichart generator for a column
+def piechart_col( col , names = None ) :
+    if names is None :
+        fig = px.pie( 
+            values = df[ col ].value_counts() ,
+            names = df[ col ].value_counts().index ,
+            )
+        fig.show()
+    else :
+        fig = px.pie( 
+            values = df[ col ].value_counts() ,
+            names = names ,
+            )
+        fig.show()
+
+# transforms IP addresses to infos : longitude , latitude , country , city
+def ip_to_coords( ip_address ) :
+    print( ip_address )
+    ret = pd.Series( dtype = object )
+    try :
+        res = geoIP.geos( ip_address ).wkt
+        lon , lat = res.replace( "(" , "" ).replace( ")" , "" ).split()[ 1 : ]
+        ret = pd.concat([ ret , pd.Series([ lat , lon ])] , ignore_index = True )
+    except :
+        ret = pd.concat([ ret , pd.Series([ pd.NA , pd.NA ])] , ignore_index = True )
+    try :
+        res = geoIP.city( ip_address )
+        ret = pd.concat([ ret , pd.Series([ res[ "country_name" ] , res[ "city" ]])] , ignore_index = True )
+    except :
+        ret = pd.concat([ ret , pd.Series([ pd.NA , pd.NA ])] , ignore_index = True )
+    return ret
+       
+        
+#%% EDA
+     
+# renaming columns
+df = df.rename( columns = { 
+    "Timestamp" : "date" ,
+    "Source Port" : "Source Port ephemeral" ,
+    "Destination Port" : "Destination Port ephemeral" ,
+    "Alerts/Warnings" : "Alert Trigger" ,
+    })
+df = df.drop( "User Information" , axis = 1 )
+print( df.describe())
+
+# generation of crosstables for cat variables
+crosstabs = {}
+def crosstab_col( col ,target , name_col , name_target ) :
+    name_tab = f"{ name_col }_x_{ name_target }"
+    crosstabs[ name_tab ] = pd.crosstab( df[ target ] , df[ col ] , normalize = True ) * 100
+
+# NAs
+df_s0 = df.shape[ 0 ]
+for col in df.columns :
+    NA_n = sum( df[ col ].isna())
+    if NA_n > 0 :
+        print( f"number of NAs in { col } = { NA_n } / { df_s0 } = { NA_n / df_s0 } " )
+
+# Attack Type !!!! TARGET VARIABLE !!!!
+col_name = "Attack Type"
+print( df[ col_name ].value_counts())
+piechart_col( col_name )
+
+# date
+col_name = "date"
+df[ col_name ] = pd.to_datetime( df[ col_name ])
+date_end = max( df[ col_name ])
+date_start = min( df[ col_name ])
+print( f"dates go from { date_start } and { date_end }" )
+fig = px.histogram( df , col_name )
+fig.show()
+
+
+#%% IP address
+
+i = 2
+for destsource in [ "Source" , "Destination" ] :
+    col = df.columns.get_loc( f"{ destsource } IP Address" ) + 1
+    df.insert( col , f"{ destsource } IP latitude" , value = pd.NA )
+    df.insert( col + 1 , f"{ destsource } IP longitude" , value = pd.NA )
+    df.insert( col + 2 , f"{ destsource } IP country" , value = pd.NA )
+    df.insert( col + 3 , f"{ destsource } IP city" , value = pd.NA )
+    df[[ f"{ destsource } IP latitude" , f"{ destsource } IP longitude" , f"{ destsource } IP country" , f"{ destsource } IP city" ]] = df[ f"{ destsource } IP Address" ].apply( lambda x : ip_to_coords( x ))
+
+## IP address map graph
+fig = subp(
+    rows = 1 ,
+    cols = 2 ,
+    specs = [[
+        { "type" : "scattergeo" } , 
+        { "type" : "scattergeo" } ,
+        ]] ,
+    subplot_titles = (
+        "Source IP locations" ,
+        "Destination IP locations" 
+        )
+    )
+fig.add_trace(
+    go.Scattergeo(
+        lat = df[ "Source IP latitude" ] ,
+        lon = df[ "Source IP longitude" ] ,
+        mode = "markers" ,
+        marker = { 
+            "size" : 5 ,
+            "color" : "blue"
+            }
+        ) ,
+    row = 1 , 
+    col = 1
+    )
+fig.add_trace(
+    go.Scattergeo(
+        lat = df[ "Destination IP latitude" ] ,
+        lon = df[ "Destination IP longitude" ] ,
+        mode = "markers" ,
+        marker = { 
+            "size" : 5 ,
+            "color" : "blue"
+            }
+        ) ,
+    row = 1 , 
+    col = 2
+    )
+fig.update_geos(
+    projection_type = "orthographic" ,
+    showcountries = True ,
+    showland = True ,
+    # landcolor = "LightGreen"
+)
+fig.update_layout(
+    height = 750 ,
+    margin = { 
+        "r" : 0 , 
+        "t" : 80 , 
+        "l" : 0 , 
+        "b" : 0 
+        } ,
+    title_text = "IP Address Locations" ,
+    title_x = 0.5
+)
+fig.show()
+
+# Proxy Information
+col_name = "Proxy Information"
+# print( df[ col_name ].value_counts())
+col = df.columns.get_loc( col_name )
+df.insert( col + 1 , "Proxy latitude" , value = pd.NA )
+df.insert( col + 2 , "Proxy longitude" , value = pd.NA )
+df.insert( col + 3 , "Proxy country" , value = pd.NA )
+df.insert( col + 4 , "Proxy city" , value = pd.NA )
+df[[ "Proxy latitude" , "Proxy longitude" , "Proxy country" , "Proxy city" ]] = df[ "Proxy Information" ].apply( lambda x : ip_to_coords( x ))
+
+def sankey_diag_IPs( ntop ) :
+    IPs_col = {}
+    labels = pd.Series( dtype = "string" )
+    for IPid , dfcol in zip([ "SIP" , "DIP" , "PIP" ] , [ "Source IP country" , "Destination IP country" , "Proxy country" ]) :
+        IPs_col[ IPid ] = df[ dfcol ].copy( deep = True )
+        IPs_col[ f"{ IPid }labs" ] = pd.Series( IPs_col[ IPid ].value_counts().index[ : ntop ])
+        bully = ( IPs_col[ IPid ].isin( IPs_col[ f"{IPid}labs" ]) | IPs_col[ IPid ].isna())
+        IPs_col[ IPid ].loc[ ~ bully ] = "other"
+        IPs_col[ f"{ IPid }labs" ] = f"{ IPid } " + pd.concat([ IPs_col[ f"{ IPid }labs" ] , pd.Series([ "other" ])])
+        labels = pd.concat([ labels , IPs_col[ f"{ IPid }labs" ]])
+    labels = list( labels.reset_index( drop = True ))
+    
+    aggregIPs = pd.DataFrame({
+        "SIP" : IPs_col[ "SIP" ] ,
+        "PIP" : IPs_col[ "PIP" ] ,
+        "DIP" : IPs_col[ "DIP" ] ,
+        })
+    aggregIPs = aggregIPs.groupby( by = [ 
+        "SIP" , 
+        "PIP" , 
+        "DIP"
+        ]).size().to_frame( "count" )
+
+    # computation of source , target , value
+    source = []
+    target = []
+    value = []
+    nlvl = aggregIPs.index.nlevels
+    for idx , row in aggregIPs.iterrows()  :
+        row_labs = []
+        if ( nlvl == 1 ) :
+            row_labs.append( f"{ aggregIPs.index.name } { idx }" )
+        else :
+            for i , val in enumerate( idx ) :
+                row_labs.append( f"{ aggregIPs.index.names[ i ] } { val }" )
+        for i in range( 0 , nlvl - 1 ) :
+            source.append( labels.index( row_labs[ i ]))
+            target.append( labels.index( row_labs[ i + 1 ]))
+            value.append( row.item() )
+    
+    # plot the sankey diagram
+    n = len( labels )
+    colors = px.colors.sample_colorscale(
+        px.colors.sequential.Inferno ,
+        [ i / ( n - 1 ) for i in range( n )]
+        ) 
+    fig = go.Figure( data = [ go.Sankey(
+        node = dict(
+          pad = 15 ,
+          thickness = 20 ,
+          line = dict( 
+              color = "rgba( 0 , 0 , 0 , 0.1 )" ,
+              width = 0.5 
+              ) ,
+          label = labels ,
+          color = colors ,
+          ) ,
+        link = dict(
+          source = source ,
+          target = target ,
+          value = value 
+          ))])
+    fig.update_layout(
+        title_text = "Sankey Diagram" ,
+        # font_family = "Courier New" ,
+        # font_color = "blue" , 
+        font_size = 20 ,
+        title_font_family = "Avenir" ,
+        title_font_color = "black",
+        )
+    fig.show()
+    
+    return aggregIPs
+aggregIPs = sankey_diag_IPs( 10 )
+
+#%% Source Port
+col_name = "Source Port ephemeral"
+## create boolean value for ephemeral and assigned ports
+"""
+    ephemeral port > 49151 = 1 
+    assigned/registered port <= 49151 = 0
+"""
+bully = df[ col_name ] > 49151
+df.loc[ bully , col_name ] = 1
+df.loc[ ~ bully , col_name ] = 0
+print( df[ col_name ].value_counts())
+# piechart_col( col_name )
+crosstab_col( col_name , "Attack Type" , "sourceport" , "attacktype" )
+
+# Destination Port
+col_name = "Destination Port ephemeral"
+## create boolean value for ephemeral and assigned ports
+"""
+    ephemeral port > 49151 = 1 
+    assigned/registered port <= 49151 = 0
+"""
+bully = df[ col_name ] > 49151
+df.loc[ bully , col_name ] = 1
+df.loc[ ~ bully , col_name ] = 0
+print( df[ col_name ].value_counts())
+# piechart_col( col_name )
+crosstab_col( col_name , "Attack Type" , "destport" , "attacktype" )
+
+# Protocol
+col_name = "Protocol"
+"""
+    UDP = { 1 if Protocol = "UDP" , 0 otherwise }
+    TCP = { 1 if Protocol = "TCP" , 0 otherwise }
+    IMCP = [ 0 , 0 ]
+"""
+print( df[ col_name ].value_counts())
+piechart_col( col_name )
+df = catvar_mapping( col_name , [ "UDP" , "ICMP" ])
+### cross table Protocol x Attack Type
+crosstab_col( col_name , "Attack Type" , col_name , "attacktype" )
+
+# Packet length
+fig = px.histogram( df , "Packet Length" )
+fig.show()
+
+# Packet Type
+col_name = "Packet Type"
+"""
+    Control = 1
+    Data = 0
+"""
+print( df[ col_name ].value_counts())
+df = catvar_mapping( col_name , [ "Control" ] , [ "Control" ])
+piechart_col( "Packet Type Control" )
+
+# Traffic Type
+col_name = "Traffic Type"
+"""
+    DNS = { 1 if Traffic Type = "DNS" , 0 otherwise }
+    HTTP = { 1 if Traffic Type = "HTTP" , 0 otherwise }
+    FTP = [ 0 , 0 ]
+"""
+print( df[ col_name ].value_counts())
+df = catvar_mapping( col_name , [ "DNS" , "HTTP" ])
+piechart_col( col_name )
+
+# Malware Indicators
+col_name = "Malware Indicators"
+print( df[ col_name ].value_counts())
+"""
+    IoC Detected = 1
+    pd.NA = 0
+"""
+df = catvar_mapping( col_name , [ "IoC Detected" ] , [ "/" ])
+piechart_col( col_name )
+
+# Anomaly Scores
+fig = px.histogram( df , "Anomaly Scores" )
+fig.show()
+
+# Alert Trigger
+col_name = "Alert Trigger"
+# print( df[ col_name ].value_counts())
+df = catvar_mapping( col_name , [ "Alert Triggered" ] , [ "/" ])
+piechart_col( col_name , names = [ "Alert triggered" , "Alert not triggered" ])
+
+# Attack Signature
+col_name = "Attack Signature"
+print( df[ "Attack Signature" ].value_counts())
+"""
+    Pattern A = 1
+    Pattern B = 0
+"""
+df = catvar_mapping( col_name , [ "Known Pattern A" ] , [ "patA" ])
+piechart_col( "Attack Signature patA" , [ "Pattern A" , "Pattern B" ])
+
+# Action taken
+col_name = "Action Taken"
+print( df[ col_name ].value_counts())
+df = catvar_mapping( col_name , [ "Logged" , "Blocked" ])
+piechart_col( col_name )
+
+# Severity Level
+col_name = "Severity Level"
+print( df[ col_name ].value_counts())
+"""
+    Low = - 1
+    Medium = 0
+    High = + 1
+"""
+df.loc[ df[ col_name ] == "Low" , col_name ] = - 1
+df.loc[ df[ col_name ] == "Medium" , col_name ] = 0
+df.loc[ df[ col_name ] == "High" , col_name ] = + 1
+piechart_col( col_name , [ "Low" , "Medium" , "High" ])
+
+# Device Information
+col_name = "Device Information"
+print( df[ col_name ].value_counts())
+# --> to be split into several columns to be atomized [ browser/browser_version (device) ]
+def atomization_DeviceInformation( info ) : # need to take process splitting for each case of device
+    print( info )
+    i1 , i2 = info.split(" (")
+    i2 , i3 = i2.split( ")")
+    i10 , i11 = i1.split( "/" )
+    i2 = i2.split( "; " )
+    i3 = i3.split()
+    return pd.Series([ i10 , i11 , i2 , i3 ])
+info = df.loc[ random.randint( 0 , df.shape[ 0 ]) , "Device Information" ]
+
+# Network Segment
+col_name = "Network Segment"
+print( df[ col_name ].value_counts())
+"""
+    segA = { 1 if "Segment A" ; 0 otherwise }
+    segB = { 1 if "Segment B" ; 0 otherwise }
+    "Segment C" = [ 0 , 0 ]
+"""
+df = catvar_mapping( col_name , [ "Segment A" , "Segment B" ] , [ "segA" , "segB" ]) 
+piechart_col( col_name )
+
+# Geo-location Data
+col_name = "Geo-location Data"
+print( df[ col_name ].value_counts())
+col = df.columns.get_loc( col_name )
+df.insert( col + 1 , "Geo-location City" , value = pd.NA )
+df.insert( col + 2 , "Geo-location State" , value = pd.NA )
+def geolocation_data( info ) :
+    city , state = info.split( ", " )
+    return pd.Series([ city , state ])
+df[[ "Geo-location City" , "Geo-location State" ]] = df[ "Geo-location Data" ].apply( lambda x : geolocation_data( x ))
+
+# Firewall Logs
+col_name = "Firewall Logs"
+print( df[ col_name ].value_counts())
+"""
+    Log Data = 1
+    pd.NA = 0
+"""
+df = catvar_mapping( col_name , [ "Log Data" ] , [ "/" ])
+# piechart_col( col_name , [ "Log Data" , "No Log Data" ])
+
+# IDS/IPS Alerts
+col_name = "IDS/IPS Alerts"
+print( df[ col_name ].value_counts())
+"""
+    Alert Data = 1
+    pd.NA = 0
+"""
+bully = df[ col_name ] == "Alert Data"
+df = catvar_mapping( col_name , [ "Alert Data" ] , [ "/" ])
+# piechart_col( col_name , [ "Alert Data" , "No Alert Data" ])
+
+# Log Source
+col_name = "Log Source"
+print( df[ col_name ].value_counts())
+"""
+    Firewall = 1
+    Server = 0
+"""
+df = catvar_mapping( col_name , [ "Firewall" ] , [ "Firewall" ])
+# piechart_col( col_name , [ "Firewall" , "Server" ])
+crosstab_col( "Log Source Firewall" , "Firewall Logs" , "logsource" , "firewallogs" )
+
+
+#%% seperat dfs for attack types
+
+df_attype = {}
+attypes = [ "Malware" , "Intrusion" , "DDoS" ]
+for attype in attypes :
+    df_attype[ attype ] = df[ df[ "Attack Type"] == attype ]
+
+
+#%% geo plot of "Attack Type" by "Anomaly Score"
+
+fig = subp(
+    rows = 3 ,
+    cols = 2 ,
+    specs = [
+        [{ "type" : "scattergeo" } , { "type" : "scattergeo" }] , 
+        [{ "type" : "scattergeo" } , { "type" : "scattergeo" }] ,
+        [{ "type" : "scattergeo" } , { "type" : "scattergeo" }] ,
+        ] ,
+    subplot_titles = (
+        "Source IP locations" ,
+        "Destination IP locations" 
+        )
+    )
+for i , ( attype , symb ) in enumerate( zip( attypes , [ "diamond" , "diamond" , "diamond" ])) :
+    fig.add_trace(
+        go.Scattergeo(
+            lat = df_attype[ attype ][ "Source IP latitude" ] ,
+            lon = df_attype[ attype ][ "Source IP longitude" ] ,
+            mode = "markers" ,
+            marker = {
+                "size" : 4 ,
+                "symbol" : symb ,
+                "color" : df_attype[ attype ][ "Anomaly Scores" ] ,
+                "colorscale" : "Viridis" ,
+                "cmin" : df_attype[ attype ][ "Anomaly Scores" ].min() ,
+                "cmax" : df_attype[ attype ][ "Anomaly Scores" ].max() ,
+                "colorbar" : { "title" : "Anomaly Score" }
+                }
+            ) ,
+        row = i + 1 , 
+        col = 1
+        )
+    fig.add_trace(
+        go.Scattergeo(
+            lat = df_attype[ attype ][ "Destination IP latitude" ] ,
+            lon = df_attype[ attype ][ "Destination IP longitude" ] ,
+            mode = "markers" ,
+            marker = {
+                "size" : 4 ,
+                "symbol" : symb ,
+                "color" : df_attype[ attype ][ "Anomaly Scores" ] ,
+                "colorscale" : "Viridis" ,
+                "cmin" : df_attype[ attype ][ "Anomaly Scores" ].min() ,
+                "cmax" : df_attype[ attype ][ "Anomaly Scores" ].max() ,
+                "colorbar" : { "title" : "Anomaly Score" }
+                }
+            ) ,
+        row = i + 1 , 
+        col = 2
+        )
+    i = i + 1
+fig.update_geos(
+    # projection_type = "orthographic" ,
+    showcountries = True ,
+    showland = True ,
+    # landcolor = "LightGreen"
+)
+fig.update_layout(
+    height = 4000 ,
+    margin = { 
+        "r" : 0 , 
+        "t" : 10 , 
+        "l" : 0 , 
+        "b" : 0 
+        } ,
+    title_text = "IP Address Locations" ,
+    title_x = 0.5
+)
+fig.show()
+
+
+#%% Packet Length x Attack Types
+
+fig = go.Figure()
+
+for i , ( attype , symb ) in enumerate( zip( attypes , [ "diamond" , "diamond" , "diamond" ])) :
+    fig.add_trace(
+        go.Scatter(
+            x = df_attype[ attype ][ "Packet Length" ] ,
+            y = [ i ] * df_attype[ attype ].shape[ 0 ] ,
+            mode = "markers" ,
+            name = attype ,
+            marker = {
+                "size" : 4 ,
+                "symbol" : symb ,
+                "opacity" : 0.1
+                }
+                ) ,
+
+        )
+    i = i + 1
+fig.show()
+
+# Anomaly Scores x Attack Types
+
+fig = go.Figure()
+
+for i , ( attype , symb ) in enumerate( zip( attypes , [ "diamond" , "diamond" , "diamond" ])) :
+    fig.add_trace(
+        go.Scatter(
+            x = df_attype[ attype ][ "Anomaly Scores" ] ,
+            y = [ i ] * df_attype[ attype ].shape[ 0 ] ,
+            mode = "markers" ,
+            name = attype ,
+            marker = {
+                "size" : 4 ,
+                "symbol" : symb ,
+                "opacity" : 0.1
+                }
+                ) ,
+
+        )
+    i = i + 1
+fig.show()
+
+#%% general crosstable
+
+def sankey_diag( cols_bully = [
+        True , # "Source IP country"
+        True , # "Destination IP country"
+        True , # "Source Port ephemeral"
+        True , # "Destination Port ephemeral"
+        True , # "Protocol"
+        True , # "Packet Type Control"
+        True , # "Traffic Type"
+        True , # "Malware Indicators"
+        True , # "Alert Trigger"
+        True , # "Attack Signature patA"
+        True , # "Action Taken"
+        True , # "Severity Level"
+        True , # "Network Segment"
+        True , # "Firewall Logs"
+        True , # "IDS/IPS Alerts"
+        True , # "Log Source Firewall"
+        ] , ntop = 10 ) :
+    cols = np.array([
+        "Source IP country" ,
+        "Destination IP country" ,
+        "Source Port ephemeral" ,
+        "Destination Port ephemeral" ,
+        "Protocol" , 
+        "Packet Type Control" ,
+        "Traffic Type" ,
+        "Malware Indicators" ,
+        "Alert Trigger" ,
+        "Attack Signature patA" ,
+        "Action Taken" ,
+        "Severity Level" ,
+        "Network Segment" ,
+        "Firewall Logs" ,
+        "IDS/IPS Alerts" ,
+        "Log Source Firewall"
+        ])
+    cols = cols[ np.array( cols_bully )]
+    
+    idx_ct =  []
+    labels = []
+    if "Source IP country" in cols :
+        SIP = df[ "Source IP country" ].copy( deep = True )
+        SIP.name = "SIP"
+        SIPlabs = pd.Series( SIP.value_counts().index[ : ntop ])
+        bully = ( SIP.isin( SIPlabs ) | SIP.isna())
+        SIP.loc[ ~ bully ] = "other"
+        SIPlabs = "SIP " + pd.concat([ SIPlabs , pd.Series([ "other" ])])
+        labels.extend( SIPlabs.to_list())
+        idx_ct = idx_ct + [ SIP ]
+        cols = cols[ cols != "Source IP country" ]
+    if "Destination IP country" in cols :
+        DIP = df[ "Destination IP country" ].copy( deep = True )
+        DIP.name = "DIP"
+        DIPlabs = pd.Series( DIP.value_counts().index[ : ntop ])
+        bully = ( DIP.isin( DIPlabs ) | DIP.isna())
+        DIP.loc[ ~ bully ] = "other"
+        DIPlabs = "DIP " + pd.concat([ DIPlabs , pd.Series([ "other" ])])
+        labels.extend( DIPlabs.to_list())
+        idx_ct = idx_ct + [ DIP ]
+        cols = cols[ cols != "Destination IP country" ]
+        
+    # build cross table with Attack Type in columns and multi-index of variables in index
+    idx_ct = idx_ct + [ df[ col ] for col in cols ]
+    print( idx_ct )
+    crosstabs = pd.crosstab( 
+        index = idx_ct ,
+        columns = df[ "Attack Type" ]
+        )
+    
+    # compute labels
+    for c in np.append( cols , "Attack Type" ) :
+        vals = df[ c ].unique()
+        for v in vals :
+            labels.append( f"{ c } { v }" )
+    # computation of source , target , value
+    source = []
+    target = []
+    value = []
+    nlvl = crosstabs.index.nlevels
+    for idx , row in crosstabs.iterrows()  :
+        row_labs = []
+        if ( nlvl == 1 ) :
+            row_labs.append( f"{ crosstabs.index.name } { idx }" )
+        else :
+            for i , val in enumerate( idx ) :
+                row_labs.append( f"{ crosstabs.index.names[ i ] } { val }" )
+        for attype in crosstabs.columns :
+            val = row[ attype ]
+            for i in range( 0 , nlvl - 1 ) :
+                source.append( labels.index( row_labs[ i ]))
+                target.append( labels.index( row_labs[ i + 1 ]))
+                value.append( val )
+            source.append( labels.index( row_labs[ - 1 ]))
+            target.append( labels.index( f"Attack Type { attype }" ))
+            value.append( val )
+    
+    # plot the sankey diagram
+    n = len( labels )
+    colors = px.colors.sample_colorscale(
+        px.colors.sequential.Inferno ,
+        [ i / ( n - 1 ) for i in range( n )]
+        ) 
+    fig = go.Figure( data = [ go.Sankey(
+        node = dict(
+          pad = 15 ,
+          thickness = 20 ,
+          line = dict( 
+              color = "rgba( 0 , 0 , 0 , 0.1 )" ,
+              width = 0.5 
+              ) ,
+          label = labels ,
+          color = colors ,
+          ) ,
+        link = dict(
+          source = source ,
+          target = target ,
+          value = value 
+          ))])
+    fig.update_layout(
+        title_text = "Sankey Diagram" ,
+        # font_family = "Courier New" ,
+        # font_color = "blue" , 
+        font_size = 20 ,
+        title_font_family = "Avenir" ,
+        title_font_color = "black",
+        )
+    fig.show()
+    
+    crosstabs = crosstabs / crosstabs.sum().sum() * 100
+    
+    return crosstabs
+
+crosstabs = sankey_diag([
+    False , # "Source IP country"
+    False , # "Destination IP country"
+    False , # "Source Port ephemeral"
+    False , # "Destination Port ephemeral"
+    True , # "Protocol"
+    False , # "Packet Type Control"
+    True , # "Traffic Type"
+    True , # "Malware Indicators"
+    False , # "Alert Trigger"
+    False , # "Attack Signature patA"
+    False , # "Action Taken"
+    False , # "Severity Level"
+    False , # "Network Segment"
+    False , # "Firewall Logs"
+    True , # "IDS/IPS Alerts"
+    False , # "Log Source Firewall"
+    ])
+
+
+#%%
+
+
+def paracat_diag( cols_bully = [
+        True , # "Source IP country"
+        True , # "Destination IP country"
+        True , # "Source Port ephemeral"
+        True , # "Destination Port ephemeral"
+        True , # "Protocol"
+        True , # "Packet Type Control"
+        True , # "Traffic Type"
+        True , # "Malware Indicators"
+        True , # "Alert Trigger"
+        True , # "Attack Signature patA"
+        True , # "Action Taken"
+        True , # "Severity Level"
+        True , # "Network Segment"
+        True , # "Firewall Logs"
+        True , # "IDS/IPS Alerts"
+        True , # "Log Source Firewall"
+        ] , 
+        colorvar = "Attack Type" ,
+        ntop = 10 ,
+        ) :
+    
+    cols = np.array([
+        "Source IP country" ,
+        "Destination IP country" ,
+        "Source Port ephemeral" ,
+        "Destination Port ephemeral" ,
+        "Protocol" , 
+        "Packet Type Control" ,
+        "Traffic Type" ,
+        "Malware Indicators" ,
+        "Alert Trigger" ,
+        "Attack Signature patA" ,
+        "Action Taken" ,
+        "Severity Level" ,
+        "Network Segment" ,
+        "Firewall Logs" ,
+        "IDS/IPS Alerts" ,
+        "Log Source Firewall"
+        ])
+    cols = cols[ np.array( cols_bully )]
+    
+    dims_var = {}
+    if "Source IP country" in cols :
+        SIP = df[ "Source IP country" ].copy( deep = True )
+        SIP.name = "SIP"
+        SIPlabs = pd.Series( SIP.value_counts().index[ : ntop ])
+        bully = ( SIP.isin( SIPlabs ) | SIP.isna())
+        SIP.loc[ ~ bully ] = "other"
+        SIPlabs = "SIP " + pd.concat([ SIPlabs , pd.Series([ "other" ])])
+        cols = cols[ cols != "Source IP country" ]
+        dims_var[ "SIP" ] = go.parcats.Dimension(
+            values = SIP ,
+            # categoryorder = "category ascending" ,
+            label = "Source IP country"
+            )
+        cols = np.append( cols , "SIP" )
+    if "Destination IP country" in cols :
+        DIP = df[ "Destination IP country" ].copy( deep = True )
+        DIP.name = "DIP"
+        DIPlabs = pd.Series( DIP.value_counts().index[ : ntop ])
+        bully = ( DIP.isin( DIPlabs ) | DIP.isna())
+        DIP.loc[ ~ bully ] = "other"
+        DIPlabs = "DIP " + pd.concat([ DIPlabs , pd.Series([ "other" ])])
+        cols = cols[ cols != "Destination IP country" ]
+        dims_var[ "DIP" ] = go.parcats.Dimension(
+            values = DIP ,
+            # categoryorder = "category ascending" ,
+            label = "Destination IP country"
+            )
+        cols = np.append( cols , "DIP" )
+    for col in cols[( cols != "SIP" ) & ( cols != "DIP" )] :
+        print( col )
+        dims_var[ col ] = go.parcats.Dimension(
+            values = df[ col ] ,
+            # categoryorder = "category ascending" ,
+            label = col
+            )
+    
+    dim_attypes = go.parcats.Dimension(
+        values = df[ "Attack Type" ], 
+        label = "Attack Type", 
+        # categoryarray = [ "Malware" , "Intrusion" , "DDoS" ] ,
+        ticktext = [ "Malware" , "Intrusion" , "DDoS" ]
+        )
+    
+    dims = [ dims_var[ col ] for col in cols ]
+    dims.append( dim_attypes )
+    
+    if colorvar == "SIP" :
+        colorvar = SIP
+    elif colorvar == "DIP" :
+        colorvar = DIP
+    elif ( colorvar in cols ) or ( colorvar == "Attack Type" ) :
+        colorvar = df[ colorvar ]
+    else :
+        ValueError( "colorvar must be in cols" )
+    catcolor = colorvar.unique()
+    catcolor_n = catcolor.shape[ 0 ]
+    color = colorvar.map({ cat : i for i , cat in enumerate( catcolor )})
+    positions = [ i / ( catcolor_n - 1 ) if ( catcolor_n > 1 ) else 0 for i in range( 0 , catcolor_n )]
+    palette = px.colors.sequential.Viridis
+    colors = [ px.colors.sample_colorscale( palette , p )[ 0 ] for p in positions ]
+    colorscale = [[ positions[ i ] , colors[ i ]] for i in range( 0 , catcolor_n )]
+    
+    fig = go.Figure( data = [ go.Parcats( 
+        dimensions = dims ,
+        line = { 
+            "color" : color ,
+            "colorscale" : colorscale ,
+            "shape" : "hspline" ,
+            } ,
+        hoveron = "color" ,
+        hoverinfo = "count+probability" ,
+        labelfont = { "size" : 18 , "family" : "Times" } ,
+        tickfont = { "size" : 16 , "family" : "Times" } ,
+        arrangement = "freeform" ,
+        )])
+    fig.show()
+
+paracat_diag([
+    False , # "Source IP country"
+    False , # "Destination IP country"
+    False , # "Source Port ephemeral"
+    False , # "Destination Port ephemeral"
+    True , # "Protocol"
+    False , # "Packet Type Control"
+    True , # "Traffic Type"
+    False , # "Malware Indicators"
+    False , # "Alert Trigger"
+    True , # "Attack Signature patA"
+    False , # "Action Taken"
+    True , # "Severity Level"
+    True , # "Network Segment"
+    False , # "Firewall Logs"
+    False , # "IDS/IPS Alerts"
+    False , # "Log Source Firewall"
+    ] ,
+    colorvar = "Attack Signature patA" ,
+    )
+
+
+#%% coefficients computation
+
+# matthews corrcoef
+
+def catvar_corr( col , target = "Attack Type") :
+    corr = matthews_corrcoef( df[ target ], df[ col ].astype( str ))
+    print( f"phi corr between { target } and { col } = { corr }" )
+catvars = np.array([
+    "Source IP country" ,
+    "Destination IP country" ,
+    "Source Port ephemeral" ,
+    "Destination Port ephemeral" ,
+    "Protocol" , 
+    "Packet Type Control" ,
+    "Traffic Type" ,
+    "Malware Indicators" ,
+    "Alert Trigger" ,
+    "Attack Signature patA" ,
+    "Action Taken" ,
+    "Severity Level" ,
+    "Network Segment" ,
+    "Firewall Logs" ,
+    "IDS/IPS Alerts" ,
+    "Log Source Firewall"
+    ])
+for c in catvars :
+    catvar_corr( c )
+
+#%% chi 2
+
+from scipy.stats import chi2_contingency
+# obs = np.array([[10, 10, 20], [20, 20, 20]])
+df_catvar = df[[
+    "Attack Type",
+    "Source Port ephemeral" ,
+    "Destination Port ephemeral" ,
+    "Protocol" , 
+    "Packet Type Control" ,
+    "Traffic Type" ,
+    "Malware Indicators" ,
+    "Alert Trigger" ,
+    "Attack Signature patA" ,
+    "Action Taken" ,
+    "Severity Level" ,
+    "Network Segment" ,
+    "Firewall Logs" ,
+    "IDS/IPS Alerts" ,
+    "Log Source Firewall"
+    ]]
+res = chi2_contingency( df_catvar.values.T[ 1 : ].astype( str ))
+print( res.statistic )
+print( res.pvalue )
+print( res.dof )
+print( res.expected_freq )
+
+#%% mca
+
+mca = prince.MCA(
+    n_components=3,
+    n_iter=3,
+    copy=True,
+    check_input=True,
+    engine='sklearn',
+    random_state=42
+)
+
+df_catvar = df[[
+    "Attack Type",
+    "Source Port ephemeral" ,
+    "Destination Port ephemeral" ,
+    "Protocol" , 
+    "Packet Type Control" ,
+    "Traffic Type" ,
+    "Malware Indicators" ,
+    "Alert Trigger" ,
+    "Attack Signature patA" ,
+    "Action Taken" ,
+    "Severity Level" ,
+    "Network Segment" ,
+    "Firewall Logs" ,
+    "IDS/IPS Alerts" ,
+    "Log Source Firewall"
+    ]]
+mca = mca.fit(df_catvar)
+
+one_hot = pd.get_dummies(df_catvar)
+
+mca_no_one_hot = prince.MCA(one_hot=False)
+mca_no_one_hot = mca_no_one_hot.fit(one_hot)
+mca_without_correction = prince.MCA(correction=None)
+
+mca_with_benzecri_correction = prince.MCA(correction='benzecri')
+mca_with_greenacre_correction = prince.MCA(correction='greenacre')
+
+mca.eigenvalues_summary
+
+#%% SARIMA analysis on Attack type
+
+Attacks_pday = df.copy( deep = True )
+Attacks_pday[ "date_dd" ] = Attacks_pday[ "date" ].dt.floor( "d" )
+Attacks_pday = Attacks_pday.groupby([ "date_dd" , "Attack Type" ]).size().unstack().iloc[ 1 : - 1 , ]
+
+# plot n attacks per day
+fig = subp(
+    rows = 3 ,
+    cols = 1 ,
+    subplot_titles = (
+        "Malware" ,
+        "Intrusion" ,
+        "DDos" ,
+        )
+    )
+fig.add_trace(
+    go.Scatter(
+        x = Attacks_pday.index ,
+        y = Attacks_pday[ "Malware" ] ,
+    ) ,
+    row = 1 ,
+    col = 1 ,
+    )
+fig.add_trace(
+    go.Scatter(
+        x = Attacks_pday.index ,
+        y = Attacks_pday[ "Intrusion" ] ,
+    ) ,
+    row = 2 ,
+    col = 1 ,
+    )
+fig.add_trace(
+    go.Scatter(
+        x = Attacks_pday.index ,
+        y = Attacks_pday[ "DDoS" ] ,
+    ) ,
+    row = 3 ,
+    col = 1 ,
+    )
+
+# plot ACF & PACF
+
+fig = subp(
+    rows = 3 ,
+    cols = 2 ,
+    subplot_titles = (
+        "Malware ACF" ,
+        "Malware PACF" ,
+        "Intrusion ACF" ,
+        "Intrusion PACF" ,
+        "DDoS ACF" ,
+        "DDoS PACF" ,
+        )
+    )
+from statsmodels.tsa.stattools import pacf
+from statsmodels.tsa.stattools import acf
+import plotly.graph_objects as go
+
+Attacktype_TSanalysis = {}
+nlags = 100
+for i , attacktype in enumerate([ "Malware" , "Intrustion" , "DDoS" ]) :
+    Attacktype_TSanalysis[ f"{ attacktype }_ACF" ] = acf( Attacks_pday[ "Malware" ] ,  nlags = nlags )
+    Attacktype_TSanalysis[ f"{ attacktype }_PACF" ] = pacf( Attacks_pday[ "Malware" ] ,  nlags = nlags )
+    fig.add_trace(
+        go.Scatter(
+            x = list( range( 0 , nlags + 1 )) , 
+            y = Attacktype_TSanalysis[ f"{ attacktype }_ACF" ] ,
+            mode = "lines" ,
+            name = "ACF" ,
+        ) ,
+        row = i + 1 ,
+        col = 1 ,
+        )
+    fig.add_trace(
+        go.Scatter(
+            x = list( range( 0 , nlags + 1 )) , 
+            y = Attacktype_TSanalysis[ f"{ attacktype }_PACF" ] ,
+            mode = "lines" ,
+            name = "PACF" ,
+        ) ,
+        row = i + 1,
+        col = 2 ,
+        )
+fig.show()
+
+#%%
+
+df.to_csv( "data/df.csv" , sep = "|" )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+
+rw = 30
+
+tr1 = go.Scatter(
+    x = Attacks_pday.index ,
+    y = Attacks_pday[ "Malware" ].rolling( rw ).mean() ,
+    line_color = "blue" ,
+)
+tr2 = go.Scatter(
+    x = Attacks_pday.index ,
+    y = Attacks_pday[ "Intrusion" ].rolling( rw ).mean() ,
+    line_color = "red" ,
+    # yaxis = "y2"
+)
+tr3 = go.Scatter(
+    x = Attacks_pday.index ,
+    y = Attacks_pday[ "DDoS" ].rolling( rw ).mean() ,
+    line_color = "#000000" ,
+    # yaxis = "y2" 
+)
+
+fig = subp()
+fig.add_trace(tr1)
+fig.add_trace(tr2)
+fig.add_trace(tr3)
+fig.show()
+
+#%%
+
+px.line(
+    Attacks_pday ,
+    x = Attacks_pday.index ,
+    y = Attacks_pday[ "DDoS" ].rolling( 15 ).mean() ,
+    mode = "line" ,
+    title = "Number of DDoS attacks MA per day"
+)
+
+#%%
+Attacks_pmonth = df.copy( deep = True )
+Attacks_pmonth[ "date_mm" ] = Attacks_pmonth[ "date" ].dt.ceil( "d" )
+Attacks_pmonth = Attacks_pmonth.groupby([ "date_mm" , "Attack Type" ]).size().unstack().iloc[ 1 : - 1 , ]
+px.line(
+    Attacks_pmonth ,
+    x = Attacks_pmonth.index ,
+    y = "DDoS" ,
+    title = "Number of DDoS attacks per month"
+)
+
+
+
+
