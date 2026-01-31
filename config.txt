@@ -1,0 +1,26 @@
+# ==========================================
+#   Global configuration for the ML project
+# ==========================================
+
+project name : cybersecurity_attacks
+github link : "https://github.com/KalooIna/cybersecurity_attacks/new/main"
+
+paths :
+  dataset_csv : "./cybersecurity_attacks.csv"
+  geolite_db : "./geolite2_db"
+
+django :
+  installed_apps :
+    - "django.contrib.gis"
+
+geoip :
+  provider : "maxmind"
+  download_url : "https://www.maxmind.com/en/accounts/1263991/geoip/downloads"
+  python_doc_url : "https://geoip2.readthedocs.io/en/latest/"
+  django_doc_url : "https://docs.djangoproject.com/en/5.2/ref/contrib/gis/geoip2/"
+
+plotly :
+  renderer : "browser"
+  choropleth :
+    color_scale : "inferno"
+    projection : "orthographic"
