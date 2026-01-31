@@ -127,3 +127,64 @@ gen-dir-repr = "pwsh -Command './generate_ascii_dir_repr.ps1 ./ -Exclude .*, __p
 | Network Segment | Team3 | | Team3 | Sanchana, Otmane, Vasantha |
 | Proxy Information | Team3 | | Team3 | Sanchana, Otmane, Vasantha |
 | Attack Type | Non assegnato | | | |
+
+## Tables for Entropy Distributions Interpretation:
+
+# Entropy Reference Tables for Malware Detection
+
+## Summary Table - Reference Values
+
+| Data Type | Entropy (bits/byte) | Relative Entropy | Source |
+|-----------|---------------------|------------------|--------|
+| **English text (single chars)** | 4.0 - 4.5 | 0.50 - 0.56 | Shannon 1951, Storer |
+| **English text (contextual)** | 0.6 - 1.3 | 0.08 - 0.16 | Shannon 1951 |
+| **Lorem Ipsum** | ~4.18 | ~0.52 | Phylum 2023 |
+| **Compressed files (ZIP, GZIP)** | 7.5 - 7.9 | 0.94 - 0.99 | Davies 2022 |
+| **Encrypted files (AES, RSA)** | 7.9 - 8.0 | 0.99 - 1.0 | Multiple sources |
+| **Obfuscated payload (XOR)** | 5.5 - 6.5 | 0.69 - 0.81 | cocomelonc 2022 |
+| **Base64 payload** | 5.5 - 6.0 | 0.69 - 0.75 | Phylum 2023 |
+| **Malware detection threshold** | >7.95 | >0.99 | Sujon 2025 |
+
+---
+
+## Interpretation Table - Absolute vs Relative Entropy
+
+| H_absolute | H_relative | Interpretation | Flag |
+|------------|------------|----------------|------|
+| >3.0 | <0.7 | Many unique symbols, skewed distribution | 🚨 SUSPICIOUS |
+| 7.0 - 8.0 | 0.95 - 1.0 | Encrypted/random data | ⚠️ HIGH ENTROPY |
+| 0 - 2.0 | Variable | Repetitive text / padding | ℹ️ LOW ENTROPY |
+| 3.5 - 4.5 | 0.75 - 0.90 | Normal natural language text | ✅ NORMAL |
+| 4.5 - 6.0 | 0.60 - 0.80 | Partially encoded / mixed content | ⚠️ REVIEW |
+
+---
+
+## Formulas
+
+**Absolute Entropy (Shannon):**
+```
+H(X) = -Σ p_i * log₂(p_i)
+```
+Range: 0 to log₂(N), where N = number of unique symbols
+
+**Relative Entropy (Normalized):**
+```
+H_rel = H(X) / H_max = H(X) / log₂(N)
+```
+Range: 0 to 1
+
+**Critical Pattern:**
+```
+Low Relative + High Absolute = 🚨 SUSPICIOUS
+```
+This indicates many unique characters but with a skewed/non-uniform distribution.
+
+---
+
+## References
+
+- Shannon, C.E. (1951). Prediction and Entropy of Printed English. Bell System Technical Journal.
+- Davies, S.R. et al. (2022). Comparison of Entropy Calculation Methods. MDPI Entropy.
+- Sujon, K.M. et al. (2025). A Novel Framework for Malware Detection. Engineering Research Express.
+- Phylum Research Team (2023). Using Entropy to Identify Obfuscated Malicious Code.
+- cocomelonc (2022). Malware Analysis: Shannon Entropy.

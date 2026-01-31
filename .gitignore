@@ -13,3 +13,7 @@ data/*
 # .env (unused for now)
 
 .env
+
+# Added by cargo
+
+/target

@@ -8,8 +8,12 @@ import pandas as pd
 from src.download_files import GetFiles
 from src.payload_analyzer import PayloadAnalyzer
 import json
+
+import plotly.express as px
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+pd.options.plotting.backend="plotly"
 
 
 class EDA():
@@ -274,15 +278,84 @@ class EDA():
         print(f"Invalid packets len: {len(invalid_headers)}")
         print(invalid_headers)
         
-        pa = PayloadAnalyzer(self.cybersecurity_df, payload_col="Payload Data")
+        
+        # Create instance of PayloadAnalyzer class
+        pa = PayloadAnalyzer()
+        
+        # Test if payload data row are lorem ipsum generated
         pa_is_lorem = df_payload_analysis['Payload Data'].apply(lambda x: pa.is_lorem_ipsum(payload_text=x))
         
-        print(pa_is_lorem.value_counts())
+        # Count lorem positive and negative row tested and print the results in console
+        non_lorem_count = pa_is_lorem.apply(lambda x: 1 if not x else 0).sum()
+        lorem_count = pa_is_lorem.apply(lambda x: 1 if x else 0).sum()
+        print(f"Text is likely generated for {lorem_count} payloads")
+        print(f"The remaining {non_lorem_count} payloads are possibly hiding something!")
         
-        df_payload_analysis['Payload Data Translated'] = df_payload_analysis['Payload Data'].apply(lambda x: pa.payload_translate(payload_text=x))
-        # Persist analysis results for further investigation
+        #Create a feature data frame to hold the entropy data
+        features = pd.DataFrame()
+        
+        # Calculate entropy for each row of Payload Data
+        features["entropy"] = df_payload_analysis['Payload Data'].apply(lambda x: pa.calculate_entropy(payload_text=x))
+        
+        # Calculate relative entropy for each row of Payload Data
+        features["relative_entropy"] = df_payload_analysis['Payload Data'].apply(lambda x: pa.calculate_relative_entropy(payload_text=x))
+        
+        # Include Attack Type to plot entropy distribution by attack type
+        features["attack_type"] = self.cybersecurity_df["Attack Type"]
+        print(f"Features found are: {features[:].describe()}")
+        
+        # Save feature df in parquet file in data dir
+        features.to_parquet(self.data_dir+"entropy_analysis_df.parquet")
+        
+        # Create single Data Frame for each combination of attack type/entropy distribution
+        malware = pd.DataFrame(features.loc[features['attack_type'] == "Malware"])
+        ddos = pd.DataFrame(features.loc[features['attack_type'] ==  "DDoS"])
+        intrusion = pd.DataFrame(features.loc[features['attack_type'] == "Intrusion"])
+        
+        # Create figure for global entropy distribution (not divided by attack type)
+        fig = features[['entropy','relative_entropy']].plot.hist()
+        # plot figure
+        #fig.show()
+        
+        # Create list of dataframes with all the attack type
+        xes = (intrusion, ddos, malware)
+        
+        # For each combination of names['Malware', 'DDoS', 'Intrusion'] data of dataframe (xes) plot and show the relative figure
+        
+        for x, name in zip(xes, ['Malware', 'DDoS', 'Intrusion']):
+            fig = px.histogram(x, x=['entropy','relative_entropy'], title=f'{name} - Entropy Distribution')
+            #fig.show()
+            
+        # Call PayloadAnalyzer "detect_statistical_anomalies" method on each row of Payload Data
+        # and expand all returned dictionaries in a data frame by calling "expand_all_dict_columns"
+        # called results
+        
+        results = pa.expand_all_dict_columns(df_payload_analysis[['Payload Data']].apply(
+                                                lambda row: pa.detect_statistical_anomalies(row['Payload Data']),
+                                                axis=1, 
+                                                result_type='expand'))
+        
+        payload_hidden_msgs = pa.expand_all_dict_columns(self.cybersecurity_df[['Payload Data']].apply(
+                                                lambda row: pa.analyze(row['Payload Data']),
+                                                axis=1, 
+                                                result_type='expand'))
+        """        
+        payload_hidden_msgs.insert(
+            self.cybersecurity_df.columns.get_loc("Payload Data"),
+            "Header Diff",
+            header_diff
+        )"""
+        
+        print(f"printing first 100 lines of payload_hidden_msgs {payload_hidden_msgs.head()}")
+        
+        # save results data frame in a parquet file for future use
+        results.to_parquet(self.data_dir+"stat_analysis_results.parquet")
+        
+        print(f"printing first 100 lines of stat_analysis_df {results.head(100)}")
+        
+        # save df_payload_analysis data frame in a parquet file for future use   
         df_payload_analysis.to_parquet(self.data_dir + "ds_payload_analysis.parquet")
-
+        payload_hidden_msgs.to_parquet(self.data_dir + "payload_hidden_msgs.parquet")
 
     def city_state_to_coords(self, cities: dict, cities_states: str) -> pd.Series:
         """
