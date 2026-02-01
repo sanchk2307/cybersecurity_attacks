@@ -19,3 +19,4 @@ data/*
 /target
 data/df.csv
 script_win.py
+.vscode/launch.json
