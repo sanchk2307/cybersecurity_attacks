@@ -17,3 +17,4 @@ data/*
 # Added by cargo
 
 /target
+data/df.csv

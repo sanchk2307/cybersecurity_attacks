@@ -7,7 +7,7 @@ version = "0.1.0"
 [tasks]
 # This command runs the entire pipeline
 run-pipeline = "python pipeline.py"
-
+script =  "python script.py"
 #This command runs the generator for the ascii representation of the directory tree excluding directories and files preceded by '.'
 gen-dir-repr = "pwsh -Command './generate_ascii_dir_repr.ps1 ./ -Exclude .*, __pycache__ -Depth 3'"
 
