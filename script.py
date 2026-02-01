@@ -253,6 +253,7 @@ def crosstab_col(col, target, name_col, name_target):
     """
     name_tab = f"{name_col}_x_{name_target}"
     crosstabs[name_tab] = pd.crosstab(df[target], df[col], normalize=True) * 100
+    
 
 
 # -----------------------------------------------------------------------------

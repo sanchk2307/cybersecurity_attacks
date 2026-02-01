@@ -1,3 +1,5 @@
+import pandas as pd
+
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
@@ -5,6 +7,7 @@
 # - "Timestamp" -> "date" for temporal analysis
 # - Port columns renamed to indicate ephemeral port analysis
 # - Alerts/Warnings -> Alert Trigger for binary encoding
+
 
 def rename_columns(df):
     """
@@ -29,13 +32,16 @@ def rename_columns(df):
         }
     )
 
+
 # -----------------------------------------------------------------------------
 # Cross-tabulation utility function
 # Used to analyze relationships between categorical variables
 # -----------------------------------------------------------------------------
 
 
-def crosstab_col(col, target, name_col, name_target):
+def crosstab_col(
+    col: str, target: str, name_col: str, name_target: str, df: pd.DataFrame
+) -> pd.crosstab:
     """
     Create a normalized cross-tabulation between two categorical columns.
 
@@ -53,8 +59,10 @@ def crosstab_col(col, target, name_col, name_target):
     name_tab = f"{name_col}_x_{name_target}"
     crosstabs[name_tab] = pd.crosstab(df[target], df[col], normalize=True) * 100
 
+    return crosstabs[name_tab]
+
+
 def missing_values_analysis(df):
-    
     # -----------------------------------------------------------------------------
     # Missing Value Analysis
     # Identify columns with missing data and their percentages
@@ -66,5 +74,7 @@ def missing_values_analysis(df):
     for col in df.columns:
         NA_n = sum(df[col].isna())
         if NA_n > 0:
-            print(f"Missing values in {col}: {NA_n:,} / {df_s0:,} ({100*NA_n/df_s0:.2f}%)")
+            print(
+                f"Missing values in {col}: {NA_n:,} / {df_s0:,} ({100 * NA_n / df_s0:.2f}%)"
+            )
     print("=" * 60)
