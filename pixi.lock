@@ -89,7 +89,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/freexl-2.0.0-h3183152_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/frozenlist-1.7.0-py312h18bfd43_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/future-1.0.0-pyhd8ed1ab_2.conda
-      - conda: https://conda.anaconda.org/conda-forge/osx-64/gdal-3.12.1-py312h1870424_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-64/gdal-3.12.1-py312h1870424_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/geocoder-1.38.1-pyhd8ed1ab_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/geoip2-4.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/geopandas-1.1.2-pyhd8ed1ab_0.conda
@@ -463,7 +463,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/freexl-2.0.0-hf297d47_2.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/frozenlist-1.7.0-py312hfdf67e6_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/future-1.0.0-pyhd8ed1ab_2.conda
-      - conda: https://conda.anaconda.org/conda-forge/win-64/gdal-3.12.1-py312h07de9ea_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/gdal-3.12.1-py312h07de9ea_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/geocoder-1.38.1-pyhd8ed1ab_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/geoip2-4.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/geopandas-1.1.2-pyhd8ed1ab_0.conda
@@ -2462,9 +2462,9 @@ packages:
   - pkg:pypi/future?source=hash-mapping
   size: 364561
   timestamp: 1738926525117
-- conda: https://conda.anaconda.org/conda-forge/osx-64/gdal-3.12.1-py312h1870424_0.conda
-  sha256: 70b455684c2e150352a7727b10cef3e7b08ff242d74794350ebe5d4b42529942
-  md5: ea4fde227e680bca2da2829cf7be7190
+- conda: https://conda.anaconda.org/conda-forge/osx-64/gdal-3.12.1-py312h1870424_1.conda
+  sha256: 7478da679684a9adea13fc9c45d89f50130a4156c22514f4b792d053af448132
+  md5: 932d937f4b42552ef83d7c351adf6f92
   depends:
   - __osx >=10.13
   - libcxx >=19
@@ -2476,11 +2476,11 @@ packages:
   license_family: MIT
   purls:
   - pkg:pypi/gdal?source=hash-mapping
-  size: 1842273
-  timestamp: 1766094029619
-- conda: https://conda.anaconda.org/conda-forge/win-64/gdal-3.12.1-py312h07de9ea_0.conda
-  sha256: 4cb42cf5ca0f118f8752e126a7c1d56cc4cc37a76bffd2316124be47421f2ed7
-  md5: cc1d78a2bb4208842a7b8ab053db8d60
+  size: 1837734
+  timestamp: 1769724226486
+- conda: https://conda.anaconda.org/conda-forge/win-64/gdal-3.12.1-py312h07de9ea_1.conda
+  sha256: 88575430f7f83d0b9f712782e06053288678276d8a12b56fbae5da37d8d39b97
+  md5: 1feadfedfda32017e21a90d1bd668731
   depends:
   - libgdal-core 3.12.1.*
   - numpy >=1.23,<3
@@ -2493,8 +2493,8 @@ packages:
   license_family: MIT
   purls:
   - pkg:pypi/gdal?source=hash-mapping
-  size: 1748026
-  timestamp: 1766096923975
+  size: 1743166
+  timestamp: 1769724540777
 - conda: https://conda.anaconda.org/conda-forge/noarch/geocoder-1.38.1-pyhd8ed1ab_2.conda
   sha256: 511a9b497e8223bd82f6d32dbe8ec927fd52ade733cb5dd7f3ff0da90a6f788f
   md5: 3917f836b57dae32f167ae2c4c63158a

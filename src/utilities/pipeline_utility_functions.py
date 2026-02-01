@@ -13,20 +13,23 @@ from src.utilities.django_settings import geoIP
 # =============================================================================
 IP_CACHE_FILE = "data/ip_geo_cache.json"
 
+
 def load_ip_cache():
     """Load cached IP geolocation data from disk."""
     if os.path.exists(IP_CACHE_FILE):
         try:
-            with open(IP_CACHE_FILE, 'r') as f:
+            with open(IP_CACHE_FILE, "r") as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             return {}
     return {}
 
+
 def save_ip_cache(cache):
     """Save IP geolocation cache to disk."""
-    with open(IP_CACHE_FILE, 'w') as f:
+    with open(IP_CACHE_FILE, "w") as f:
         json.dump(cache, f)
+
 
 # Global cache loaded once at import
 _ip_cache = load_ip_cache()
@@ -142,9 +145,6 @@ def ip_to_coords(ip_address):
         Series containing [latitude, longitude, country_name, city]
         Returns NA values for any fields that cannot be resolved
     """
-
-    # print(ip_address)
-
     ret = pd.Series(dtype=object)
     try:
         res = geoIP.geos(ip_address).wkt
@@ -202,13 +202,16 @@ def ip_geolocation_processing(df: pd.DataFrame):
         # - Only lookup unique IPs (not every row)
         # - Use ThreadPoolExecutor for parallel lookups
         # - Cache results to ip_geo_cache.json for subsequent runs
+
         global _ip_cache
         unique_ips = list(df[ip_col].dropna().unique())
 
         # Check cache for already-resolved IPs
         cached_ips = [ip for ip in unique_ips if ip in _ip_cache]
         uncached_ips = [ip for ip in unique_ips if ip not in _ip_cache]
-        print(f"  {len(unique_ips)} unique IPs: {len(cached_ips)} cached, {len(uncached_ips)} to lookup...")
+        print(
+            f"  {len(unique_ips)} unique IPs: {len(cached_ips)} cached, {len(uncached_ips)} to lookup..."
+        )
 
         # Start with cached results
         ip_geo_map = {ip: _ip_cache[ip] for ip in cached_ips}
@@ -216,7 +219,7 @@ def ip_geolocation_processing(df: pd.DataFrame):
         # Lookup uncached IPs in parallel
         if uncached_ips:
             completed = 0
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=14) as executor:
                 futures = {executor.submit(ip_to_coords, ip): ip for ip in uncached_ips}
                 for future in as_completed(futures):
                     ip = futures[future]
@@ -233,7 +236,11 @@ def ip_geolocation_processing(df: pd.DataFrame):
 
         # Map results back to dataframe (cache stores lists with None for missing values)
         for i, geo_col in enumerate(geo_columns):
-            df[geo_col] = df[ip_col].map(lambda ip, i=i: ip_geo_map.get(ip, [None]*4)[i] if pd.notna(ip) else None)
+            df[geo_col] = df[ip_col].map(
+                lambda ip, i=i: ip_geo_map.get(ip, [None] * 4)[i]
+                if pd.notna(ip)
+                else None
+            )
 
     # -----------------------------------------------------------------------------
     # GLOBAL IP DISTRIBUTION MAP
@@ -352,7 +359,9 @@ def proxy_info_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Check cache for already-resolved IPs
     cached_ips = [ip for ip in unique_ips if ip in _ip_cache]
     uncached_ips = [ip for ip in unique_ips if ip not in _ip_cache]
-    print(f"  {len(unique_ips)} unique proxy IPs: {len(cached_ips)} cached, {len(uncached_ips)} to lookup...")
+    print(
+        f"  {len(unique_ips)} unique proxy IPs: {len(cached_ips)} cached, {len(uncached_ips)} to lookup..."
+    )
 
     # Start with cached results
     ip_geo_map = {ip: _ip_cache[ip] for ip in cached_ips}
@@ -377,9 +386,12 @@ def proxy_info_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # Map results back to dataframe (cache stores lists)
     for i, geo_col in enumerate(geo_columns):
-        df[geo_col] = df[col_name].map(lambda ip, i=i: ip_geo_map.get(ip, [None]*4)[i] if pd.notna(ip) else None)
+        df[geo_col] = df[col_name].map(
+            lambda ip, i=i: ip_geo_map.get(ip, [None] * 4)[i] if pd.notna(ip) else None
+        )
 
     return df
+
 
 def sankey_diag_IPs(df, ntop):
     """
