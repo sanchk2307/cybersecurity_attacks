@@ -37,10 +37,12 @@ import src.utilities.django_settings as django_settings
 import src.utilities.data_preparation as data_prep
 
 # from src.utilities.data_visualization import *
-from sklearn.metrics import matthews_corrcoef
 
 
 from plotly.subplots import make_subplots as subp
+
+from scipy.stats import chi2_contingency
+
 
 # Configure Plotly to render charts in the default browser
 plotly.io.renderers.default = "browser"
@@ -630,7 +632,9 @@ crosstabs = pipeline_utils.sankey_diag(
 print("\n" + "=" * 60)
 print("PARALLEL CATEGORIES DIAGRAM")
 print("=" * 60)
-print("Features: Protocol, Traffic Type, Attack Signature, Severity Level, Network Segment")
+print(
+    "Features: Protocol, Traffic Type, Attack Signature, Severity Level, Network Segment"
+)
 print("Color coding: Attack Signature Pattern (A vs B)")
 
 pipeline_utils.paracat_diag(
@@ -640,20 +644,373 @@ pipeline_utils.paracat_diag(
         False,  # "Destination IP country"
         False,  # "Source Port ephemeral"
         False,  # "Destination Port ephemeral"
-        True,   # "Protocol" - INCLUDED
+        True,  # "Protocol" - INCLUDED
         False,  # "Packet Type Control"
-        True,   # "Traffic Type" - INCLUDED
+        True,  # "Traffic Type" - INCLUDED
         False,  # "Malware Indicators"
         False,  # "Alert Trigger"
-        True,   # "Attack Signature patA" - INCLUDED
+        True,  # "Attack Signature patA" - INCLUDED
         False,  # "Action Taken"
-        True,   # "Severity Level" - INCLUDED
-        True,   # "Network Segment" - INCLUDED
+        True,  # "Severity Level" - INCLUDED
+        True,  # "Network Segment" - INCLUDED
         False,  # "Firewall Logs"
         False,  # "IDS/IPS Alerts"
         False,  # "Log Source Firewall"
     ],
     colorvar="Attack Signature patA",
 )
+
+
+# =============================================================================
+# MATTHEWS CORRELATION COEFFICIENT (MCC) ANALYSIS
+# =============================================================================
+# The Matthews Correlation Coefficient (MCC) measures the quality of
+# binary classifications. Values range from -1 to +1:
+# - +1: Perfect prediction
+# -  0: No better than random
+# - -1: Total disagreement
+#
+# For multi-class, this generalizes to the Phi coefficient.
+
+print("\n" + "=" * 60)
+print("MATTHEWS CORRELATION COEFFICIENTS")
+print("=" * 60)
+print("Measuring correlation between each feature and Attack Type")
+print("(Values close to 0 indicate no linear correlation)\n")
+
+
+catvars = np.array(
+    [
+        "Source IP country",
+        "Destination IP country",
+        "Source Port ephemeral",
+        "Destination Port ephemeral",
+        "Protocol",
+        "Packet Type",
+        "Traffic Type",
+        "Malware Indicators",
+        "Alert Trigger",
+        "Attack Signature patA",
+        "Action Taken",
+        "Severity Level",
+        "Network Segment",
+        "Firewall Logs",
+        "IDS/IPS Alerts",
+        "Log Source Firewall",
+    ]
+)
+for c in catvars:
+    pipeline_utils.catvar_corr(df, c)
+
+# =============================================================================
+# CHI-SQUARE TEST OF INDEPENDENCE
+# =============================================================================
+# Tests whether there is a significant association between Protocol and Attack Type
+# - H0: Variables are independent (no association)
+# - H1: Variables are not independent (association exists)
+#
+# If p-value < 0.05, we reject H0 and conclude significant association
+
+print("\n" + "=" * 60)
+print("CHI-SQUARE TEST: Protocol vs Attack Type")
+print("=" * 60)
+
+
+# Prepare categorical variables for analysis
+df_catvar = df[
+    [
+        "Attack Type",
+        "Source Port ephemeral",
+        "Destination Port ephemeral",
+        "Protocol",
+        "Packet Type",
+        "Traffic Type",
+        "Malware Indicators",
+        "Alert Trigger",
+        "Attack Signature patA",
+        "Action Taken",
+        "Severity Level",
+        "Network Segment",
+        "Firewall Logs",
+        "IDS/IPS Alerts",
+        "Log Source Firewall",
+    ]
+]
+
+# Encode categorical columns as integers for contingency table
+df_catvar_encoded = df_catvar.copy()
+for col in df_catvar_encoded.columns:
+    if df_catvar_encoded[col].dtype == "object":
+        df_catvar_encoded[col] = pd.Categorical(df_catvar_encoded[col]).codes
+
+# Perform chi-square test
+res = chi2_contingency(
+    pd.crosstab(df_catvar_encoded["Attack Type"], df_catvar_encoded["Protocol"])
+)
+print(f"Chi-square statistic: {res.statistic:.4f}")
+print(f"P-value: {res.pvalue:.6f}")
+print(f"Degrees of freedom: {res.dof}")
+print("\nExpected frequencies:")
+print(res.expected_freq)
+
+if res.pvalue < 0.05:
+    print("\n=> Significant association detected (p < 0.05)")
+else:
+    print("\n=> No significant association (p >= 0.05)")
+
+# =============================================================================
+# MULTIPLE CORRESPONDENCE ANALYSIS (MCA)
+# =============================================================================
+# MCA is a data analysis technique for nominal categorical data,
+# used to detect and represent underlying structures in a data set.
+# It's the categorical equivalent of Principal Component Analysis (PCA).
+#
+# Key outputs:
+# - Eigenvalues: Amount of variance explained by each component
+# - Component coordinates: Position of category levels in reduced space
+"""
+print("\n" + "=" * 60)
+print("MULTIPLE CORRESPONDENCE ANALYSIS (MCA)")
+print("=" * 60)
+
+# Initialize MCA with 3 components
+mca = prince.MCA(
+    n_components=3,
+    n_iter=3,
+    copy=True,
+    check_input=True,
+    engine="sklearn",
+    random_state=42,
+)
+
+# Select categorical variables for MCA
+df_catvar = df[
+    [
+        "Attack Type",
+        "Source Port ephemeral",
+        "Destination Port ephemeral",
+        "Protocol",
+        "Packet Type",
+        "Traffic Type",
+        "Malware Indicators",
+        "Alert Trigger",
+        "Attack Signature patA",
+        "Action Taken",
+        "Severity Level",
+        "Network Segment",
+        "Firewall Logs",
+        "IDS/IPS Alerts",
+        "Log Source Firewall",
+    ]
+]
+
+# Fit MCA model
+mca = mca.fit(df_catvar)
+
+# Alternative MCA approaches for comparison
+one_hot = pd.get_dummies(df_catvar)
+
+# MCA with one_hot=False requires positive values (add 1 to avoid zeros)
+one_hot_positive = one_hot + 1
+
+mca_no_one_hot = prince.MCA(one_hot=False)
+mca_no_one_hot = mca_no_one_hot.fit(one_hot_positive)
+
+# Different correction methods for eigenvalue adjustment
+mca_without_correction = prince.MCA(correction=None)
+mca_with_benzecri_correction = prince.MCA(correction="benzecri")
+mca_with_greenacre_correction = prince.MCA(correction="greenacre")
+
+# Display MCA results
+print("\nMCA Eigenvalues Summary:")
+print("(Shows variance explained by each component)")
+print(mca.eigenvalues_summary)"""
+
+# =============================================================================
+# TIME SERIES ANALYSIS: DAILY ATTACK PATTERNS
+# =============================================================================
+# Aggregate attacks by day and analyze temporal patterns
+# This helps identify:
+# - Seasonal patterns (weekly, monthly cycles)
+# - Trend changes over time
+# - Anomalous periods with unusual attack volumes
+
+print("\n" + "=" * 60)
+print("TIME SERIES ANALYSIS: DAILY ATTACK COUNTS")
+print("=" * 60)
+
+# Aggregate attacks by day
+Attacks_pday = df.copy(deep=True)
+Attacks_pday["date_dd"] = Attacks_pday["date"].dt.floor("d")
+Attacks_pday = (
+    Attacks_pday.groupby(["date_dd", "Attack Type"]).size().unstack().iloc[1:-1,]
+)
+
+print(f"Time series length: {len(Attacks_pday)} days")
+print(f"Date range: {Attacks_pday.index.min()} to {Attacks_pday.index.max()}")
+
+# -----------------------------------------------------------------------------
+# Daily Attack Count Time Series Plot
+# Shows raw daily counts for each attack type
+# -----------------------------------------------------------------------------
+fig = subp(
+    rows=3,
+    cols=1,
+    subplot_titles=(
+        "Malware Attacks per Day",
+        "Intrusion Attempts per Day",
+        "DDoS Attacks per Day",
+    ),
+    vertical_spacing=0.08,
+)
+
+# Malware time series
+fig.add_trace(
+    go.Scatter(
+        x=Attacks_pday.index,
+        y=Attacks_pday["Malware"],
+        mode="lines",
+        name="Malware",
+        line=dict(color="#636EFA"),
+        hovertemplate="<b>Malware</b><br>Date: %{x}<br>Count: %{y}<extra></extra>",
+    ),
+    row=1,
+    col=1,
+)
+
+# Intrusion time series
+fig.add_trace(
+    go.Scatter(
+        x=Attacks_pday.index,
+        y=Attacks_pday["Intrusion"],
+        mode="lines",
+        name="Intrusion",
+        line=dict(color="#EF553B"),
+        hovertemplate="<b>Intrusion</b><br>Date: %{x}<br>Count: %{y}<extra></extra>",
+    ),
+    row=2,
+    col=1,
+)
+
+# DDoS time series
+fig.add_trace(
+    go.Scatter(
+        x=Attacks_pday.index,
+        y=Attacks_pday["DDoS"],
+        mode="lines",
+        name="DDoS",
+        line=dict(color="#00CC96"),
+        hovertemplate="<b>DDoS</b><br>Date: %{x}<br>Count: %{y}<extra></extra>",
+    ),
+    row=3,
+    col=1,
+)
+
+fig.update_layout(
+    height=800,
+    title_text="Daily Attack Counts by Type",
+    title_font_size=18,
+    showlegend=True,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+)
+fig.update_xaxes(title_text="Date", row=3, col=1)
+fig.update_yaxes(title_text="Count")
+fig.show()
+
+# -----------------------------------------------------------------------------
+# ACF and PACF Analysis
+# Autocorrelation helps identify time series patterns:
+# - ACF: Correlation between observations at different lags
+# - PACF: Direct correlation at each lag, removing intermediate effects
+# These help determine ARIMA model parameters (p, d, q)
+# -----------------------------------------------------------------------------
+print("\n--- Autocorrelation Analysis ---")
+
+fig = subp(
+    rows=3,
+    cols=2,
+    subplot_titles=(
+        "Malware - Autocorrelation (ACF)",
+        "Malware - Partial Autocorrelation (PACF)",
+        "Intrusion - Autocorrelation (ACF)",
+        "Intrusion - Partial Autocorrelation (PACF)",
+        "DDoS - Autocorrelation (ACF)",
+        "DDoS - Partial Autocorrelation (PACF)",
+    ),
+    vertical_spacing=0.1,
+    horizontal_spacing=0.08,
+)
+
+from statsmodels.tsa.stattools import pacf
+from statsmodels.tsa.stattools import acf
+
+Attacktype_TSanalysis = {}
+nlags = 100
+
+# Color scheme for attack types
+ts_colors = {"Malware": "#636EFA", "Intrusion": "#EF553B", "DDoS": "#00CC96"}
+
+for i, attacktype in enumerate(["Malware", "Intrusion", "DDoS"]):
+    # Calculate ACF and PACF
+    Attacktype_TSanalysis[f"{attacktype}_ACF"] = acf(
+        Attacks_pday[attacktype], nlags=nlags
+    )
+    Attacktype_TSanalysis[f"{attacktype}_PACF"] = pacf(
+        Attacks_pday[attacktype], nlags=nlags
+    )
+
+    # Plot ACF
+    fig.add_trace(
+        go.Scatter(
+            x=list(range(0, nlags + 1)),
+            y=Attacktype_TSanalysis[f"{attacktype}_ACF"],
+            mode="lines",
+            name=f"{attacktype} ACF",
+            line=dict(color=ts_colors[attacktype]),
+            hovertemplate=f"<b>{attacktype} ACF</b><br>Lag: %{{x}}<br>Correlation: %{{y:.3f}}<extra></extra>",
+        ),
+        row=i + 1,
+        col=1,
+    )
+
+    # Plot PACF
+    fig.add_trace(
+        go.Scatter(
+            x=list(range(0, nlags + 1)),
+            y=Attacktype_TSanalysis[f"{attacktype}_PACF"],
+            mode="lines",
+            name=f"{attacktype} PACF",
+            line=dict(color=ts_colors[attacktype]),
+            hovertemplate=f"<b>{attacktype} PACF</b><br>Lag: %{{x}}<br>Correlation: %{{y:.3f}}<extra></extra>",
+        ),
+        row=i + 1,
+        col=2,
+    )
+
+fig.update_layout(
+    height=900,
+    title_text="Autocorrelation Analysis for Attack Time Series",
+    title_font_size=18,
+    showlegend=False,
+)
+fig.update_xaxes(title_text="Lag (days)")
+fig.update_yaxes(title_text="Correlation")
+fig.show()
+
+
+# %% Save Processed Dataset
+# =============================================================================
+# SAVE PROCESSED DATASET
+# =============================================================================
+# Export the processed DataFrame with all engineered features
+
+print("\n" + "=" * 60)
+print("SAVING PROCESSED DATASET")
+print("=" * 60)
+
+df.to_parquet("data/kaloinas_eda.parquet", index=False)
+print("Dataset saved to data/kaloinas_eda.parquet")
+print(f"Total records: {len(df):,}")
+print(f"Total columns: {len(df.columns)}")
 
 # END OF EDA PIPELINE

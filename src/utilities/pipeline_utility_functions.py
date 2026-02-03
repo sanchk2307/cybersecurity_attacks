@@ -9,6 +9,7 @@ from plotly.subplots import make_subplots as subp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.utilities.django_settings import geoIP
 from user_agents import parse
+from sklearn.metrics import matthews_corrcoef
 
 # =============================================================================
 # IP GEOLOCATION CACHE
@@ -924,3 +925,9 @@ def paracat_diag(
         ]
     )
     fig.show()
+
+
+def catvar_corr(df, col, target="Attack Type"):
+    """Calculate Matthews correlation coefficient between a feature and target."""
+    corr = matthews_corrcoef(df[target], df[col].astype(str))
+    print(f"  {col:35} : {corr:+.4f}")
