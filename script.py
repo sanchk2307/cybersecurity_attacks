@@ -11,12 +11,11 @@
 # - user_agents : Browser/device detection from User-Agent strings
 
 import pandas as pd
-import prince
 import os
 import math
 import numpy as np
-# from statsmodels.tsa.stattools import pacf
-# from statsmodels.tsa.stattools import acf
+from statsmodels.tsa.stattools import pacf
+from statsmodels.tsa.stattools import acf
 import sklearn as skl
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import label_binarize
@@ -140,8 +139,8 @@ def piechart_col( col , names = None ) :
     """
     if names is None :
         fig = px.pie( 
-            values = df[ col ].value_counts() ,
-            names = df[ col ].value_counts().index ,
+            values = df[ col ].value_counts( dropna = False ) ,
+            names = df[ col ].value_counts( dropna = False  ).index ,
             title = f"Distribution of { col }" ,
             )
         fig.update_traces(
@@ -938,6 +937,553 @@ def df_bias_classes( df , crosstab_name , threshold , colclass_names , dynamic_t
                 df.loc[ midx , bias_col_name ] = p_class    # assign class number
     return X_col
 
+#%% Utility functions : modelling _____________________________________________
+
+def logit( attypes , x_train , x_test , y_train , y_test ) :
+    """
+    Train a Logistic Regression classifier.
+
+    Parameters
+    ----------
+    attypes : array-like
+        Attack type labels ( not used inside this function ).
+    x_train : array-like
+        Training feature matrix.
+    x_test : array-like
+        Test feature matrix ( not used inside this function ).
+    y_train : array-like
+        Training target labels.
+    y_test : array-like
+        Test target labels ( not used inside this function ).
+
+    Returns
+    -------
+    model : sklearn.linear_model.LogisticRegression
+        Fitted Logistic Regression model.
+    """
+    
+    model = skl.linear_model.LogisticRegression(
+        solver = "lbfgs" ,
+        max_iter = 1000
+    )
+    model.fit( x_train , y_train )
+    
+    return model
+
+def randomforrest( attypes , x_train , x_test , y_train , y_test ) :
+    """
+    Train a Random Forest classifier.
+
+    Parameters
+    ----------
+    attypes : array-like
+        Attack type labels ( not used inside this function ).
+    x_train : array-like
+        Training feature matrix.
+    x_test : array-like
+        Test feature matrix ( not used inside this function ).
+    y_train : array-like
+        Training target labels.
+    y_test : array-like
+        Test target labels ( not used inside this function ).
+
+    Returns
+    -------
+    model : sklearn.ensemble.RandomForestClassifier
+        Fitted Random Forest model.
+    """
+    
+    model = skl.ensemble.RandomForestClassifier(
+        n_estimators = 100 ,
+        max_depth = None ,
+        random_state = 1 ,
+        n_jobs = - 1
+        )
+    model.fit( x_train , y_train )
+    return model
+
+def model_predictions( model , x_test ) :
+    """
+    Generate predictions and class probabilities from a trained model.
+
+    Parameters
+    ----------
+    model : sklearn-like estimator
+        Fitted classification model implementing:
+            - predict()
+            - predict_proba()
+    x_test : array-like
+        Test feature matrix used for inference.
+
+    Returns
+    -------
+    y_pred : array-like
+        Predicted class labels.
+    y_prob : array-like
+        Predicted class probabilities.
+        Shape typically:
+            ( n_samples , n_classes )
+    """
+    
+    y_pred = model.predict( x_test )
+    y_prob = model.predict_proba( x_test )
+    
+    return y_pred , y_prob
+
+def model_metrics( attypes , model , x_train , x_test , y_train , y_test , y_pred , y_prob ) :
+    """
+    Compute and visualize classification metrics.
+
+    This function performs :
+        1. Confusion matrix visualization
+        2. Accuracy and classification report
+        3. Multiclass ROC curves with AUC
+        4. Mutual Information feature importance
+
+    Parameters
+    ----------
+    attypes : list-like
+        Ordered class labels used for display and evaluation.
+    model : fitted estimator
+        Trained classification model ( not directly used here ).
+    x_train , x_test : array-like
+        Feature matrices.
+    y_train , y_test : array-like
+        True labels.
+    y_pred : array-like
+        Predicted class labels.
+    y_prob : array-like
+        Predicted class probabilities.
+    """
+    
+    # confusion matrix ________________________________________________________
+    confmat = pd.DataFrame(
+        skl.metrics.confusion_matrix( y_test , y_pred ) ,
+        index = attypes ,
+        columns = attypes
+    )
+    fig = px.imshow(
+        confmat ,
+        text_auto = True ,
+        color_continuous_scale = "Magma" ,
+        title = "Confusion Matrix"
+    )
+    fig.update_layout(
+        xaxis_title = "Predicted Class" ,
+        yaxis_title = "True Class"
+    )
+    fig.show()
+    
+    # metrics evaluation ______________________________________________________
+    accscore = skl.metrics.accuracy_score( y_test , y_pred )
+    print( f"Accuracy = { accscore }" )
+    print( "\nClassification Report :\n" )
+    print( skl.metrics.classification_report( y_test , y_pred , target_names = attypes ))
+    
+    # ROC curve computation ___________________________________________________
+    y_test_bin = label_binarize( y_test , classes = np.arange( len( attypes )))
+    n_classes = y_test_bin.shape[ 1 ]
+    fig_roc = go.Figure()
+    for yclass in range( n_classes ) :
+        fpr , tpr , _ = skl.metrics.roc_curve( y_test_bin[ : , yclass ] , y_prob[ : , yclass ])
+        roc_auc = skl.metrics.auc( fpr , tpr )
+    
+        fig_roc.add_trace( go.Scatter(
+            x = fpr ,
+            y = tpr ,
+            mode = "lines" ,
+            name = f"{ attypes[ yclass ]} ( AUC = { roc_auc })"
+        ))
+    ## random baseline
+    fig_roc.add_trace(go.Scatter(
+        x = [ 0 , 1 ] ,
+        y = [ 0 , 1 ] ,
+        mode = "lines" ,
+        line = dict( dash = "dash" ) ,
+        name = "Random"
+    ))
+    fig_roc.update_layout(
+        title = "Multiclass ROC Curve" ,
+        xaxis_title = "False Positive Rate" ,
+        yaxis_title = "True Positive Rate" ,
+        legend_title = "Classes" ,
+        template = "plotly_dark"
+    )
+    fig_roc.show()
+    
+    # marginal information ____________________________________________________
+    marginfo_scores = skl.feature_selection.mutual_info_classif(
+        x_train ,
+        y_train ,
+        discrete_features = "auto" ,
+        random_state = 100
+    )
+    marginfo = pd.Series(
+        marginfo_scores ,
+        index = x_train.columns
+    ).sort_values( ascending = False )
+    fig = px.bar(
+        marginfo ,
+        x = list( marginfo.values ) ,
+        y = marginfo.index ,
+        orientation = "h" ,
+        text = marginfo.values ,
+        title = "Marginal Information Scores" ,
+        labels = { "x" : "Marginal Information score" , "y" : "Feature" }
+        )
+    fig.update_traces( 
+        texttemplate = "%{x:.4f}" , 
+        textposition = "outside" )
+    fig.update_layout( 
+        yaxis = dict( autorange = "reversed" ) ,
+        barcornerradius = 15 ,
+        bargap = 0.2 ,
+        uniformtext_minsize = 8 ,
+        uniformtext_mode = "hide"
+        )
+    fig.show()
+
+def feature_engineering( 
+        features_mask , 
+        threshold_floor , 
+        contvar_nobs_b_class ,
+        dynamic_threshold_pars 
+        ) :
+    """
+    Build engineered bias-based feature columns according to a feature mask.
+
+    The function :
+        1. Selects feature groups based on features_mask .
+        2. Builds class bins ( for continuous variables when needed ) .
+        3. Computes crosstabs for selected column combinations .
+        4. Applies df_bias_classes() to generate ordinal bias features .
+        5. Returns list of generated feature column names .
+
+    Parameters
+    ----------
+    features_mask : iterable of bool
+        Mask selecting which feature groups to activate .
+    threshold_floor : numeric
+        Base threshold used inside df_bias_classes() .
+    contvar_nobs_b_class : int
+        Minimum number of observations per bin when discretizing
+        continuous variables.
+    dynamic_threshold_pars : tuple
+        Parameters passed to dynamic_threshold() .
+
+    Returns
+    -------
+    list
+        Names of all generated engineered feature columns.
+    """
+    
+    # define all available feature groups
+    features_existing = np.array([
+        "Source Port & Destination Port" ,
+        "Source IP latitude/longitude combination & Destination IP latitude/longitude combination" ,
+        "Sounce IP Country , Destination IP country combination" ,
+        "date dd" ,
+        "Network & Traffic" ,
+        "Security Response" ,
+        "Time decomposition" ,
+        "Anomaly Scores" ,
+        "Packet Length"
+        ])
+    features_selected = features_existing[ np.array( features_mask )] # select only activated feature groups
+    X_cols = [] # store names of generated columns
+    
+    # Source Port & Destination Port
+    # -------------------------------------------------------------------------
+    if "Source Port & Destination Port" in features_selected :
+        
+        # process both source and destination ports independently
+        for SourDest in [ "Source" , "Destination" ] :
+            target_col = f"{ SourDest } Port"
+            # discretize continuous port values into bins
+            colclass_name = contvar_classes_builder_bycount_bynobs( 
+                df , 
+                target_col , 
+                contvar_nobs_b_class 
+                )
+            # build crosstab on discretized class
+            crosstab_name = crosstab_col( df , [ colclass_name ])
+            # generate bias features
+            X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
+            
+    # Source IP latitude/longitude combination & Destination IP latitude/longitude combination
+    # -------------------------------------------------------------------------
+    if "Source IP latitude/longitude combination & Destination IP latitude/longitude combination" in features_selected : 
+        for SourDest in [ 
+                "Source" , 
+                "Destination" 
+                ] :
+            colclass_names = []
+            # discretize longitude and latitude separately
+            for lonlat in [ "longitude" , "latitude" ] :
+                target_col = f"{ SourDest } IP { lonlat }"
+                # colclass_name = classes_builder( target_col , 40 )
+                colclass_name = contvar_classes_builder_bycount_bynobs( df , target_col , contvar_nobs_b_class )
+                colclass_names.append( colclass_name )
+            # extend with categorical security-related variables
+            colclass_names.extend([
+                # "Protocol" , # <------- these for 
+                # "Packet Type" ,
+                # "Traffic Type" ,
+                # "Attack Signature patA" ,
+                # "Network Segment" ,
+                # "Proxy usage" ,
+                
+                "Malware Indicators" ,
+                "Alerts/Warnings" ,
+                "Action Taken" ,
+                "Severity Level" ,
+                "Log Source" ,
+                "Firewall Logs" ,
+                "IDS/IPS Alerts" ,
+                ])
+            # build crosstab
+            crosstab_name = crosstab_col( df , [ col for col in colclass_names ])
+            # generate bias features
+            X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , colclass_names , dynamic_threshold_pars ))
+            
+    # Sounce IP Country , Destination IP country combination
+    # -------------------------------------------------------------------------
+    if "Sounce IP Country , Destination IP country combination" in features_selected :
+        colclass_names = [ 
+            "Source IP country" , 
+            "Destination IP country" ,
+            
+            # "Protocol" , 
+            # "Packet Type" ,
+            # "Traffic Type" ,
+            # "Attack Signature" ,
+            # "Network Segment" ,
+            # "Proxy usage" ,
+            
+            # "Malware Indicators" ,
+            # "Alerts/Warnings" ,
+            # "Action Taken" ,
+            # "Severity Level" ,
+            # "Log Source" ,
+            # "Firewall Logs" ,
+            # "IDS/IPS Alerts" ,
+            
+            ]
+        crosstab_name = crosstab_col( df , [ col for col in colclass_names ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , colclass_names , dynamic_threshold_pars ))
+        
+    # date dd
+    # -------------------------------------------------------------------------
+    if "date dd" in features_selected :
+        crosstab_name = crosstab_col( df , [ "date dd" ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
+        
+    # Network & Traffic
+    # -------------------------------------------------------------------------
+    if "Network & Traffic" in features_selected :
+        columns = [
+            "Protocol" , 
+            "Packet Type" ,
+            "Traffic Type" ,
+            "Attack Signature" ,
+            "Network Segment" ,
+            "Proxy usage" ,
+            
+            "Browser family" ,
+            "OS family" ,
+            "Device type" ,
+            ]
+        crosstab_name = crosstab_col( df , [ col for col in columns ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , columns , dynamic_threshold_pars ))
+        
+    # Security Response
+    # -------------------------------------------------------------------------
+    if "Security Response" in features_selected : 
+        columns = [
+            "Malware Indicators" ,
+            "Alerts/Warnings" ,
+            "Action Taken" ,
+            "Severity Level" ,
+            "Log Source" ,
+            "Firewall Logs" ,
+            "IDS/IPS Alerts" ,
+            "Severity Level" ,
+            
+            "Browser family" ,
+            "OS family" ,
+            "Device type" ,
+            ]
+        crosstab_name = crosstab_col( df , [ col for col in columns ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , columns , dynamic_threshold_pars ))
+        
+    # time
+    # -------------------------------------------------------------------------
+    if "time decomposition" in features_selected :
+        columns = { 
+            "date MW" , 
+            "date WD" , 
+            "date H" ,
+            "date M" , # <------------ buddy here dropped my accurage by 2 whole percent, turned my marginal info to dust !!!!!!!!!!!
+            # "Browser family" ,
+            # "OS family" ,
+            # "Device type" ,
+            # "Malware Indicators" ,
+            }
+        crosstab_name = crosstab_col( df , [ col for col in columns ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , columns , dynamic_threshold_pars ))
+        
+    # Anomaly Scores
+    # -------------------------------------------------------------------------
+    if "Anomaly Scores" in features_selected : 
+        colclass_name = contvar_classes_builder_bycount_bynobs( df , "Anomaly Scores" , contvar_nobs_b_class )
+        crosstab_name = crosstab_col( df , [ colclass_name ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
+        
+    # Packet Length
+    # -------------------------------------------------------------------------
+    if "Packet Length" in features_selected : 
+        colclass_name = contvar_classes_builder_bycount_bynobs( df , "Packet Length" , contvar_nobs_b_class )
+        # colclass_names = [ colclass_name , "Protocol" ]
+        crosstab_name = crosstab_col( df , [ colclass_name ])
+        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
+        
+    return X_cols
+
+def Modelling_PIPELINE( testp , features_mask , threshold_floor , contvar_nobs_b_class , dynamic_threshold_pars , model_type = "logit" , split_before_training = False ) :
+    """
+    End-to-end modelling pipeline.
+
+    The function :
+        1. Optionally performs train / test split before or after feature engineering .
+        2. Builds engineered bias-based features .
+        3. Encodes target labels .
+        4. Trains selected model type .
+        5. Computes predictions and evaluation metrics .
+        6. Returns test predictions .
+
+    Parameters
+    ----------
+    testp : float
+        Proportion of dataset used for testing ( 0 < testp < 1 ) .
+    features_mask : iterable of bool
+        Controls which feature groups are activated .
+    threshold_floor : numeric
+        Base bias threshold passed to feature engineering .
+    contvar_nobs_b_class : int
+        Minimum number of observations per continuous bin .
+    dynamic_threshold_pars : tuple
+        Parameters controlling dynamic threshold function .
+    model_type : str
+        "logit" or "randomforrest" .
+    split_before_training : bool
+        If False :
+            Feature engineering is performed on full dataset
+            before train / test split .
+        If True :
+            Dataset is split first , then features are used
+            on train and test subsets .
+
+    Returns
+    -------
+    y_pred : array-like
+        Predicted class labels for test set .
+    """
+    
+    global df
+    attypes = df[ "Attack Type" ].unique()
+    
+    # =========================================================================
+    # CASE 1 : SPLIT AFTER FEATURE ENGINEERING
+    # =========================================================================
+    if split_before_training == False :
+        # build engineered features on entire dataset
+        X_cols = feature_engineering( 
+            features_mask , 
+            threshold_floor , 
+            contvar_nobs_b_class , 
+            dynamic_threshold_pars 
+            )
+        df = df.copy() # copy dataframe to avoid fragmentation
+        
+        # separate predictors and target
+        x_vars = df[ X_cols ]
+        y_var = df[ "Attack Type" ]
+        
+        # encode categorical target into integers
+        y = LabelEncoder()
+        y_var = y.fit_transform( y_var )
+        
+        # stratif tryain / test split
+        x_train , x_test , y_train , y_test = skl.model_selection.train_test_split(
+            x_vars ,
+            y_var ,
+            test_size = testp ,
+            random_state = 50 ,
+            stratify = y_var
+        )
+    # =========================================================================
+    # CASE 2 : SPLIT BEFORE FEATURE ENGINEERING ----- not operational
+    # =========================================================================
+    else :
+        # split raw dataset first
+        df_train , df_test = skl.model_selection.train_test_split(
+            df ,
+            test_size = testp ,
+            train_size = ( 1 - testp ) ,
+            stratify = df[ "Attack Type" ] ,
+            random_state = 42
+            )
+        
+        # build engineered features on entire train and test dataset
+        X_cols = feature_engineering( 
+            features_mask , 
+            threshold_floor , 
+            contvar_nobs_b_class , 
+            dynamic_threshold_pars 
+            ) # df to be modified !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # copy dataframes to avoid fragmentation
+        df_train = df_train.copy()
+        df_test = df_test.copy()
+        
+        # extract engineered features from train and test splits
+        x_train = df_train[ X_cols ]
+        x_test = df_test[ X_cols ]
+        
+        y = LabelEncoder()
+        # encode training labels
+        y_train = df_train[ "Attack Type" ]
+        y_train = y.fit_transform( y_train )
+        # encode test labels
+        y_test = df_test[ "Attack Type" ]
+        y_test = y.fit_transform( y_test )
+    
+    # =========================================================================
+    # MODEL SELECTION
+    # =========================================================================
+    if model_type == "logit" :
+        model = logit( attypes , x_train , x_test , y_train , y_test )
+    elif model_type == "randomforrest" :
+        model = randomforrest( attypes , x_train , x_test , y_train , y_test )
+    else :
+        print( "model type is nor recognized" )
+    
+    # =========================================================================
+    # PREDICTION AND EVALUATION
+    # =========================================================================
+    y_pred , y_prob = model_predictions( model , x_test )
+    model_metrics( 
+        attypes , 
+        model , 
+        x_train , 
+        x_test , 
+        y_train ,
+        y_test , 
+        y_pred , 
+        y_prob 
+        )
+    
+    return y_pred
+
 #%% Exploratory Data Analysis (EDA) & Data Preparation
 # =============================================================================
 
@@ -951,583 +1497,530 @@ def df_bias_classes( df , crosstab_name , threshold , colclass_names , dynamic_t
 # - "Timestamp" -> "date" for temporal analysis
 # - Port columns renamed to indicate ephemeral port analysis
 # - Alerts/Warnings -> Alert Trigger for binary encoding
-     
-# renaming columns
-# -----------------------------------------------------------------------------
-df = df.rename( columns = { 
-    "Timestamp" : "date" ,
-    # "Source Port" : "Source Port ephemeral" ,
-    # "Destination Port" : "Destination Port ephemeral" ,
-    "Alerts/Warnings" : "Alert Trigger" ,
-    })
-df = df.drop([ "User Information" , "Payload Data" ] , axis = 1 )
 
-# display summary statistics for numerical columns
-# -----------------------------------------------------------------------------
-print( "Dataset summary statistics" , "-" * 60 , df.describe())
-
-# missing value analysis : identify columns with missing data and their %
-# -----------------------------------------------------------------------------
-print( "Missing value analysis" , "-" * 60 )
-df_s0 = df.shape[ 0 ]
-for col in df.columns :
-    NA_n = sum( df[ col ].isna())
-    if NA_n > 0 :
-        print( f"number of NAs in { col } = { NA_n } / { df_s0 } = { NA_n / df_s0 }" )
-        
+def EDA_DataPrep_PIPELINE( df ) :
+    # renaming columns
+    # -------------------------------------------------------------------------
+    df = df.rename( columns = { 
+        "Timestamp" : "date" ,
+        # "Source Port" : "Source Port ephemeral" ,
+        # "Destination Port" : "Destination Port ephemeral" ,
+        # "Alerts/Warnings" : "Alert Trigger" ,
+        })
+    df = df.drop([ "User Information" , "Payload Data" ] , axis = 1 )
+    
+    # display summary statistics for numerical columns
+    # -------------------------------------------------------------------------
+    print( "Dataset summary statistics" , "-" * 60 , df.describe())
+    
+    # missing value analysis : identify columns with missing data and their %
+    # -------------------------------------------------------------------------
+    print( "Missing value analysis" , "-" * 60 )
+    df_s0 = df.shape[ 0 ]
+    for col in df.columns :
+        NA_n = sum( df[ col ].isna())
+        if NA_n > 0 :
+            print( f"number of NAs in { col } = { NA_n } / { df_s0 } = { NA_n / df_s0 }" )
+            
 # Attack Type : target variable analysis
 # -----------------------------------------------------------------------------
-## This is the primary classification target with 3 classes:
-## - Malware : Malicious software attacks
-## - Intrusion : Unauthorized access attempts
-## - DDoS : Distributed Denial of Service attacks
-col_name = "Attack Type"
-print( "Target variiable : Attack Type distribution" , "-" * 60 , df[ col_name ].value_counts())
-piechart_col( col_name )
+    ## This is the primary classification target with 3 classes:
+    ## - Malware : Malicious software attacks
+    ## - Intrusion : Unauthorized access attempts
+    ## - DDoS : Distributed Denial of Service attacks
+    col_name = "Attack Type"
+    print( "Target variiable : Attack Type distribution" , "-" * 60 , df[ col_name ].value_counts())
+    piechart_col( col_name )
 
-#%% date
+# date
 # -----------------------------------------------------------------------------
-col_name = "date"
-df[ col_name ] = pd.to_datetime( df[ col_name ])
-date_end = max( df[ col_name ])
-date_start = min( df[ col_name ])
 
-print( "Temporal distribution" , "-" * 60 ,  f"dataset time range : from { date_start } to { date_end }" )
-fig = px.histogram(
-    df , 
-    x = col_name ,
-    title = "Distribution of cyberattack types over time" ,
-    labels = { 
-        "date" : "date" ,
-        "count" : "number of attacks"
-        } ,
-    color_discrete_sequence = [ "#636EFA" ]
-    )
-fig.update_layout(
-    xaxis_title = "Date" ,
-    yaxis_title = "Number of Attacks" ,
-    showlegend = False
-)
-fig.show()
-
-col = df.columns.get_loc( col_name )
-col_insert = [ 
-        "date dd" ,
-        "date MW" ,
-        "date MW1" , # day = [ 1 ; 7 ]
-        "date MW2" , # day = [ 8 ; 14 ]
-        "date MW3" , # day = [ 15 ; 22 ]
-        "date WD" ,
-        "date WD1" , # day = monday
-        "date WD2" , # day = tuesday
-        "date WD3" , # day = wednesday
-        "date WD4" , # day = thursday
-        "date WD5" , # day = friday
-        "date WD6" , # day = saturday
-        "date H" ,
-        "date H1" , # hour = [ 0300 ; 0900 [
-        "date H2" , # hour = [ 0900 ; 1500 [
-        "date H3" , # hour = [ 1500 ; 2100 [
-        "date M" ,
-        "date M1" , # month = january
-        "date M2" , # month = february
-        "date M3" , # month = march
-        "date M4" , # month = april
-        "date M5" , # month = may
-        "date M6" , # month = june
-        "date M7" , # month = july
-        "date M8" , # month = august
-        "date M9" , # month = september
-        "date M10" , # month = october
-        "date M11" , # month = november
-        ]
-for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
-    if colnew_name in [ 
-            "date dd" ,
-            "date MW" , 
-            "date WD" , 
-            "date H" , 
-            "date M" 
-            ] :
-        df.insert( col , colnew_name , value = pd.NA )
-    else :
-        df.insert( col , colnew_name , value = 0 )
-
-df[ "date dd" ] = df[ "date" ].dt.floor( "d" )
-sched = [ 0 , 7 , 14 , 22 ]
-for day_filter in range( 0 , len( sched ) - 1 ) :
-    day_bully = ( df[ "date" ].dt.day > sched[ day_filter ]) & ( df[ "date" ].dt.day <= sched[ day_filter + 1 ])
-    df.loc[ day_bully ,  f"date MW{ day_filter + 1 }" ] = 1
-    df.loc[ day_bully ,  "date MW" ] = f"MW{ day_filter + 1 }"
-df[ "date MW" ] = df[ "date MW" ].fillna( "MW4" )
-for day_filter in range( 0 , 6 ) :
-    day_bully = df[ "date" ].dt.weekday == day_filter
-    df.loc[ day_bully , f"date WD{ day_filter + 1 }" ] = 1
-    df.loc[ day_bully , "date WD" ] = f"WD{ day_filter + 1 }"
-df[ "date WD" ] = df[ "date WD" ].fillna( "WD7" )
-sched = [ 3 , 9 , 15 , 21 ]
-for day_filter in range( 0 , len( sched ) - 1 ) :
-    day_bully = ( df[ "date" ].dt.hour >= sched[ day_filter ]) & ( df[ "date" ].dt.hour < sched[ day_filter + 1 ])
-    df.loc[ day_bully , f"date H{ day_filter + 1}" ] = 1
-    df.loc[ day_bully , "date H" ] = f"H{ day_filter + 1}"
-df[ "date H" ] = df[ "date H" ].fillna( "H4" )
-for day_filter in range( 1 , 12 ) :
-    day_bully = df[ "date" ].dt.month == day_filter
-    df.loc[ day_bully , f"date M{ day_filter }" ] = 1
-    df.loc[ day_bully , "date M" ] = f"M{ day_filter }"
-df[ "date M" ] = df[ "date M" ].fillna( "M12" )
-
-### cross table date categories x Attack Type
-for col_name in [ 
-        "date MW" , 
-        "date WD" , 
-        "date H" , 
-        "date M" 
-        ] :
-    crosstab_col( col_name , "Attack Type" , col_name , "attacktype" )
-
-#%% IP address
-# -----------------------------------------------------------------------------
-# This section :
-# - Extracts geographic information from Source and Destination IP addresses
-# - Visualizes global distribution of attack origins and targets
-# - Analyzes proxy usage patterns in the network traffic
-
-# IP address geolocation extraction ___________________________________________
-# Convert IP addresses to geographic coordinates using MaxMind GeoIP2
-# This enables geographic visualization and analysis of attack patterns
-
-## insert new columns for geographic data
-for destsource in [ "Source" , "Destination" ] :
-    col = df.columns.get_loc( f"{ destsource } IP Address" )
-    col_insert = [
-        f"{ destsource } IP 3octet" ,
-        f"{ destsource } IP 2octet" ,
-        f"{ destsource } IP 1octet" ,
-        f"{ destsource } IP latitude" ,
-        f"{ destsource } IP longitude" ,
-        f"{ destsource } IP country" ,
-        f"{ destsource } IP city"
-        ]
-    for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
-        df.insert( col , colnew_name , value = pd.NA )
-    df[[ 
-        f"{ destsource } IP latitude" , 
-        f"{ destsource } IP longitude" , 
-        f"{ destsource } IP country" , 
-        f"{ destsource } IP city" 
-        ]] = df[ f"{ destsource } IP Address" ].apply( lambda x : ip_to_coords( x ))
-    for i in range( 1 , 4 ) :
-        df[ f"{ destsource } IP {i}octet" ] = extract_ipv4_prefix( destsource , i )
-
-## global IP address distribution map _________________________________________
-### orthographic projection showing attack source and destination locations
-### left globe : Source IPs ( where attacks originate )
-### right globe : Destination IPs ( attack targets )
-fig = subp(
-    rows = 1 ,
-    cols = 2 ,
-    specs = [
-        [
-            { "type" : "scattergeo" } ,
-            { "type" : "scattergeo" } ,
-        ]
-        ] ,
-    subplot_titles = (
-        "Source IP locations" ,
-        "Destination IP locations" 
+    col_name = "date"
+    df[ col_name ] = pd.to_datetime( df[ col_name ])
+    date_end = max( df[ col_name ])
+    date_start = min( df[ col_name ])
+    
+    print( "Temporal distribution" , "-" * 60 ,  f"dataset time range : from { date_start } to { date_end }" )
+    fig = px.histogram(
+        df , 
+        x = col_name ,
+        title = "Distribution of cyberattack types over time" ,
+        labels = { 
+            "date" : "date" ,
+            "count" : "number of attacks"
+            } ,
+        color_discrete_sequence = [ "#636EFA" ]
         )
+    fig.update_layout(
+        xaxis_title = "Date" ,
+        yaxis_title = "Number of Attacks" ,
+        showlegend = False
     )
-## Source IP locations ________________________________________________________
-fig.add_trace(
-    go.Scattergeo(
-        lat = df[ "Source IP latitude" ] ,
-        lon = df[ "Source IP longitude" ] ,
-        mode = "markers" ,
-        marker = { 
-            "size" : 5 ,
-            "color" : "blue" ,
-            "opacity" : 0.6
+    fig.show()
+    
+    col = df.columns.get_loc( col_name )
+    col_insert = [ 
+            "date dd" ,
+            "date MW" ,
+            # "date MW1" , # day = [ 1 ; 7 ]
+            # "date MW2" , # day = [ 8 ; 14 ]
+            # "date MW3" , # day = [ 15 ; 22 ]
+            "date WD" ,
+            # "date WD1" , # day = monday
+            # "date WD2" , # day = tuesday
+            # "date WD3" , # day = wednesday
+            # "date WD4" , # day = thursday
+            # "date WD5" , # day = friday
+            # "date WD6" , # day = saturday
+            "date H" ,
+            # "date H1" , # hour = [ 0300 ; 0900 [
+            # "date H2" , # hour = [ 0900 ; 1500 [
+            # "date H3" , # hour = [ 1500 ; 2100 [
+            "date M" ,
+            # "date M1" , # month = january
+            # "date M2" , # month = february
+            # "date M3" , # month = march
+            # "date M4" , # month = april
+            # "date M5" , # month = may
+            # "date M6" , # month = june
+            # "date M7" , # month = july
+            # "date M8" , # month = august
+            # "date M9" , # month = september
+            # "date M10" , # month = october
+            # "date M11" , # month = november
+            ]
+    for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
+        if colnew_name in [ 
+                "date dd" ,
+                "date MW" , 
+                "date WD" , 
+                "date H" , 
+                "date M" 
+                ] :
+            df.insert( col , colnew_name , value = pd.NA )
+        else :
+            df.insert( col , colnew_name , value = 0 )
+    
+    df[ "date dd" ] = df[ "date" ].dt.floor( "d" )
+    sched = [ 0 , 7 , 14 , 22 ]
+    for day_filter in range( 0 , len( sched ) - 1 ) :
+        day_bully = ( df[ "date" ].dt.day > sched[ day_filter ]) & ( df[ "date" ].dt.day <= sched[ day_filter + 1 ])
+        # df.loc[ day_bully ,  f"date MW{ day_filter + 1 }" ] = 1
+        df.loc[ day_bully ,  "date MW" ] = f"MW{ day_filter + 1 }"
+    df[ "date MW" ] = df[ "date MW" ].fillna( "MW4" )
+    for day_filter in range( 0 , 6 ) :
+        day_bully = df[ "date" ].dt.weekday == day_filter
+        # df.loc[ day_bully , f"date WD{ day_filter + 1 }" ] = 1
+        df.loc[ day_bully , "date WD" ] = f"WD{ day_filter + 1 }"
+    df[ "date WD" ] = df[ "date WD" ].fillna( "WD7" )
+    sched = [ 3 , 9 , 15 , 21 ]
+    for day_filter in range( 0 , len( sched ) - 1 ) :
+        day_bully = ( df[ "date" ].dt.hour >= sched[ day_filter ]) & ( df[ "date" ].dt.hour < sched[ day_filter + 1 ])
+        # df.loc[ day_bully , f"date H{ day_filter + 1}" ] = 1
+        df.loc[ day_bully , "date H" ] = f"H{ day_filter + 1}"
+    df[ "date H" ] = df[ "date H" ].fillna( "H4" )
+    for day_filter in range( 1 , 12 ) :
+        day_bully = df[ "date" ].dt.month == day_filter
+        # df.loc[ day_bully , f"date M{ day_filter }" ] = 1
+        df.loc[ day_bully , "date M" ] = f"M{ day_filter }"
+    df[ "date M" ] = df[ "date M" ].fillna( "M12" )
+    
+# IP address
+# -----------------------------------------------------------------------------
+    # This section :
+    # - Extracts geographic information from Source and Destination IP addresses
+    # - Visualizes global distribution of attack origins and targets
+    # - Analyzes proxy usage patterns in the network traffic
+    
+    # IP address geolocation extraction _______________________________________
+    # Convert IP addresses to geographic coordinates using MaxMind GeoIP2
+    # This enables geographic visualization and analysis of attack patterns
+    
+    ## insert new columns for geographic data
+    for destsource in [ "Source" , "Destination" ] :
+        col = df.columns.get_loc( f"{ destsource } IP Address" )
+        col_insert = [
+            f"{ destsource } IP 3octet" ,
+            f"{ destsource } IP 2octet" ,
+            f"{ destsource } IP 1octet" ,
+            f"{ destsource } IP latitude" ,
+            f"{ destsource } IP longitude" ,
+            f"{ destsource } IP country" ,
+            f"{ destsource } IP city"
+            ]
+        for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
+            df.insert( col , colnew_name , value = pd.NA )
+        df[[ 
+            f"{ destsource } IP latitude" , 
+            f"{ destsource } IP longitude" , 
+            f"{ destsource } IP country" , 
+            f"{ destsource } IP city" 
+            ]] = df[ f"{ destsource } IP Address" ].apply( lambda x : ip_to_coords( x ))
+        for i in range( 1 , 4 ) :
+            df[ f"{ destsource } IP {i}octet" ] = extract_ipv4_prefix( destsource , i )
+    
+    ## global IP address distribution map _____________________________________
+    ### orthographic projection showing attack source and destination locations
+    ### left globe : Source IPs ( where attacks originate )
+    ### right globe : Destination IPs ( attack targets )
+    fig = subp(
+        rows = 1 ,
+        cols = 2 ,
+        specs = [
+            [
+                { "type" : "scattergeo" } ,
+                { "type" : "scattergeo" } ,
+            ]
+            ] ,
+        subplot_titles = (
+            "Source IP locations" ,
+            "Destination IP locations" 
+            )
+        )
+    ## Source IP locations ____________________________________________________
+    fig.add_trace(
+        go.Scattergeo(
+            lat = df[ "Source IP latitude" ] ,
+            lon = df[ "Source IP longitude" ] ,
+            mode = "markers" ,
+            marker = { 
+                "size" : 5 ,
+                "color" : "blue" ,
+                "opacity" : 0.6
+                } ,
+            name = "Source IPs" ,
+            hovertemplate = "<b>Attack Origin</b><br>Lat: %{lat:.2f}<br>Lon: %{lon:.2f}<extra></extra>"
+            ) ,
+        row = 1 , 
+        col = 1
+        )
+    ## Destination IP locations _______________________________________________
+    fig.add_trace(
+        go.Scattergeo(
+            lat = df[ "Destination IP latitude" ] ,
+            lon = df[ "Destination IP longitude" ] ,
+            mode = "markers" ,
+            marker = { 
+                "size" : 5 ,
+                "color" : "blue" ,
+                "opacity" : 0.6
+                } ,
+            name = "Desination IPs" ,
+            hovertemplate = "<b>Attack Target</b><br>Lat: %{lat:.2f}<br>Lon: %{lon:.2f}<extra></extra>"
+            ) ,
+        row = 1 , 
+        col = 2
+        )
+    fig.update_geos(
+        # projection_type = "orthographic" ,
+        showcountries = True ,
+        showland = True
+        # landcolor = "lightgreen" ,
+        # countrycolor = "white ,
+        # oceancolor = "lightblue" ,
+        # showocean = True
+    )
+    fig.update_layout(
+        height = 750 ,
+        margin = { 
+            "r" : 0 , 
+            "t" : 80 , 
+            "l" : 0 , 
+            "b" : 0 
             } ,
-        name = "Source IPs" ,
-        hovertemplate = "<b>Attack Origin</b><br>Lat: %{lat:.2f}<br>Lon: %{lon:.2f}<extra></extra>"
-        ) ,
-    row = 1 , 
-    col = 1
-    )
-## Destination IP locations ___________________________________________________
-fig.add_trace(
-    go.Scattergeo(
-        lat = df[ "Destination IP latitude" ] ,
-        lon = df[ "Destination IP longitude" ] ,
-        mode = "markers" ,
-        marker = { 
-            "size" : 5 ,
-            "color" : "blue" ,
-            "opacity" : 0.6
-            } ,
-        name = "Desination IPs" ,
-        hovertemplate = "<b>Attack Target</b><br>Lat: %{lat:.2f}<br>Lon: %{lon:.2f}<extra></extra>"
-        ) ,
-    row = 1 , 
-    col = 2
-    )
-fig.update_geos(
-    # projection_type = "orthographic" ,
-    showcountries = True ,
-    showland = True
-    # landcolor = "lightgreen" ,
-    # countrycolor = "white ,
-    # oceancolor = "lightblue" ,
-    # showocean = True
-)
-fig.update_layout(
-    height = 750 ,
-    margin = { 
-        "r" : 0 , 
-        "t" : 80 , 
-        "l" : 0 , 
-        "b" : 0 
-        } ,
-    title_text = "Global Distribution of Cyber Attack Traffic" ,
-    title_x = 0.5 ,
-    title_font_size = 18 ,
-    showlegend = True ,
-    legend = {
-        "orientation" : "h" ,
-        "yanchor" : "bottom" ,
-        "y" : - 0.1 ,
-        "xanchor" : "center" ,
-        "x" : 0.5
-        }
-    )
-fig.show()
-
+        title_text = "Global Distribution of Cyber Attack Traffic" ,
+        title_x = 0.5 ,
+        title_font_size = 18 ,
+        showlegend = True ,
+        legend = {
+            "orientation" : "h" ,
+            "yanchor" : "bottom" ,
+            "y" : - 0.1 ,
+            "xanchor" : "center" ,
+            "x" : 0.5
+            }
+        )
+    fig.show()
+    
 # Proxy Information
 # -----------------------------------------------------------------------------
-# Prepare columns for proxy IP geolocation data
-# Proxies may be used to mask the true origin of attacks
-col_name = "Proxy Information"
-
-## insert new columns for geographic data
-col = df.columns.get_loc( col_name )
-col_insert = [ 
-        "Proxy usage" ,
-        "Proxy latitude" ,
-        "Proxy longitude" ,
-        "Proxy country" ,
-        "Proxy city"
-        ]
-for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
-    if ( col_insert == "Proxy usage" ) :
-        df.insert( col , colnew_name , value = 0 )
-        df.loc[ ~ df[ "Proxy Information" ].isna(), "Proxy usage" ] = 1
-    else :
-        df.insert( col , colnew_name , value = pd.NA )
-df[[ "Proxy latitude" , "Proxy longitude" , "Proxy country" , "Proxy city" ]] = df[ "Proxy Information" ].apply( lambda x : ip_to_coords( x ))
-
-print( "Traffic flow analysis" , "-" * 60 )
-aggregIPs = sankey_diag_IPs( 10 )
-
-#%% Source Port
+    # Prepare columns for proxy IP geolocation data
+    # Proxies may be used to mask the true origin of attacks
+    col_name = "Proxy Information"
+    
+    ## insert new columns for geographic data
+    col = df.columns.get_loc( col_name )
+    col_insert = [ 
+            "Proxy usage" ,
+            "Proxy latitude" ,
+            "Proxy longitude" ,
+            "Proxy country" ,
+            "Proxy city"
+            ]
+    for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
+        if ( col_insert == "Proxy usage" ) :
+            df.insert( col , colnew_name , value = 0 )
+            df.loc[ ~ df[ "Proxy Information" ].isna(), "Proxy usage" ] = 1
+        else :
+            df.insert( col , colnew_name , value = pd.NA )
+    df[[ "Proxy latitude" , "Proxy longitude" , "Proxy country" , "Proxy city" ]] = df[ "Proxy Information" ].apply( lambda x : ip_to_coords( x ))
+    
+    print( "Traffic flow analysis" , "-" * 60 )
+    aggregIPs = sankey_diag_IPs( 10 )
+    
+# Source Port
 # -----------------------------------------------------------------------------
-col_name = "Source Port"
-print( df[ col_name ].value_counts())
-## histogram
-fig = px.histogram(
-    df , 
-    x = col_name ,
-    title = f"Distribution of { col_name } values" ,
-    labels = { 
-        "date" : "date" ,
-        "count" : "number of attacks"
-        } ,
-    color_discrete_sequence = [ "#636EFA" ]
+    col_name = "Source Port"
+    print( df[ col_name ].value_counts())
+    ## histogram
+    fig = px.histogram(
+        df , 
+        x = col_name ,
+        title = f"Distribution of { col_name } values" ,
+        labels = { 
+            "date" : "date" ,
+            "count" : "number of attacks"
+            } ,
+        color_discrete_sequence = [ "#636EFA" ]
+        )
+    fig.update_layout(
+        xaxis_title = col_name ,
+        yaxis_title = "Number of attacks" ,
+        showlegend = False
     )
-fig.update_layout(
-    xaxis_title = col_name ,
-    yaxis_title = "Number of attacks" ,
-    showlegend = False
-)
-fig.show()
-
+    fig.show()
+    
 # Destination Port
 # -----------------------------------------------------------------------------
-col_name = "Destination Port"
-print( df[ col_name ].value_counts())
-## histogram
-fig = px.histogram(
-    df , 
-    x = col_name ,
-    title = f"Distribution of { col_name } values" ,
-    labels = { 
-        "date" : "date" ,
-        "count" : "number of attacks"
-        } ,
-    color_discrete_sequence = [ "#636EFA" ]
+    col_name = "Destination Port"
+    print( df[ col_name ].value_counts())
+    ## histogram
+    fig = px.histogram(
+        df , 
+        x = col_name ,
+        title = f"Distribution of { col_name } values" ,
+        labels = { 
+            "date" : "date" ,
+            "count" : "number of attacks"
+            } ,
+        color_discrete_sequence = [ "#636EFA" ]
+        )
+    fig.update_layout(
+        xaxis_title = col_name ,
+        yaxis_title = "Number of attacks" ,
+        showlegend = False
     )
-fig.update_layout(
-    xaxis_title = col_name ,
-    yaxis_title = "Number of attacks" ,
-    showlegend = False
-)
-fig.show()
-
-#%% Protocol
+    fig.show()
+    
+# Protocol
 # -----------------------------------------------------------------------------
-col_name = "Protocol"
-"""
-    UDP = { 1 if Protocol = "UDP" , 0 otherwise } ; connectionless , fast but unreliable ( DNS , streaming , gaming )
-    TCP = { 1 if Protocol = "TCP" , 0 otherwise } ; connection-oriented , reliable delivery ( web , email , file transfer )
-    IMCP = [ 0 , 0 ] ; control messages and diagnostics ( ping , traceroute )
-"""
-print( df[ col_name ].value_counts())
-piechart_col( col_name )
-## reate binary indicator columns for protocols
-df = catvar_mapping( col_name , [ "UDP" , "ICMP" ])
-### cross table Protocol x Attack Type
-crosstab_col( col_name , "Attack Type" , col_name , "attacktype" )
-
+    col_name = "Protocol"
+    """
+        UDP = { 1 if Protocol = "UDP" , 0 otherwise } ; connectionless , fast but unreliable ( DNS , streaming , gaming )
+        TCP = { 1 if Protocol = "TCP" , 0 otherwise } ; connection-oriented , reliable delivery ( web , email , file transfer )
+        IMCP = [ 0 , 0 ] ; control messages and diagnostics ( ping , traceroute )
+    """
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # Packet length
 # -----------------------------------------------------------------------------
-# Packet length can indicate:
-    # - Small packets : Control messages , ACKs , probes
-    # - Medium packets : Typical web traffic
-    # - Large packets : File transfers , streaming data
-    # - Unusual sizes : Potential attack indicators
-fig = px.histogram( 
-    df , 
-    "Packet Length" ,
-    title = "Distribution of network pack sizes" ,
-    labels = {
-        "Packet Length" : "Packet Length ( bytes )" ,
-        "count" : "Frequency" 
-        } ,
-        color_discrete_sequence = [ "#00CC96" ]
+    # Packet length can indicate:
+        # - Small packets : Control messages , ACKs , probes
+        # - Medium packets : Typical web traffic
+        # - Large packets : File transfers , streaming data
+        # - Unusual sizes : Potential attack indicators
+    fig = px.histogram( 
+        df , 
+        "Packet Length" ,
+        title = "Distribution of network pack sizes" ,
+        labels = {
+            "Packet Length" : "Packet Length ( bytes )" ,
+            "count" : "Frequency" 
+            } ,
+            color_discrete_sequence = [ "#00CC96" ]
+        )
+    fig.update_layout(
+        xaxis_title = "Packet length ( bytes )" ,
+        yaxis_title = "Number of packets" ,
+        showlegend = False
     )
-fig.update_layout(
-    xaxis_title = "Packet length ( bytes )" ,
-    yaxis_title = "Number of packets" ,
-    showlegend = False
-)
-fig.show()
-
+    fig.show()
+    
 # Packet Type
 # -----------------------------------------------------------------------------
-# Packet Types :
-    # - Control packets : Network management ( SYN , ACK , FIN , RST )
-    # - Data packets : Actual payload / content transmission
-col_name = "Packet Type"
-print( df[ col_name ].value_counts())
-# binary encoding : 
-    # - Control = 1
-    # - Data = 0
-df = catvar_mapping( col_name , [ "Control" ] , [ "Control" ])
-piechart_col( "Packet Type Control" )
-
+    # Packet Types :
+        # - Control packets : Network management ( SYN , ACK , FIN , RST )
+        # - Data packets : Actual payload / content transmission
+    col_name = "Packet Type"
+    print( df[ col_name ].value_counts())
+    piechart_col( "Packet Type" )
+    
 # Traffic Type
-col_name = "Traffic Type"
 # -----------------------------------------------------------------------------
-# Application layer protocols :
-    # - DNS : Domain Name System queries / responses ( port 53 )
-    # - HTTP : Web traffic ( port 80 )
-    # - FTP : File Transfer Protocol ( ports 20, 21 )
-print( df[ col_name ].value_counts())
-# binary encoding , creates indicator columns for DNS and HTTP :
-    # - DNS = { 1 if Traffic Type = "DNS" , 0 otherwise }
-    # - HTTP = { 1 if Traffic Type = "HTTP" , 0 otherwise }
-df = catvar_mapping( col_name , [ "DNS" , "HTTP" ])
-piechart_col( col_name )
-
+    # Application layer protocols :
+        # - DNS : Domain Name System queries / responses ( port 53 )
+        # - HTTP : Web traffic ( port 80 )
+        # - FTP : File Transfer Protocol ( ports 20, 21 )
+    col_name = "Traffic Type"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # Malware Indicators
 # -----------------------------------------------------------------------------
-# Indicators of Compromise ( IoC ) detected by security systems
-# IoC examples : malicious file hashes , suspicious domains , known attack patterns
-col_name = "Malware Indicators"
-print( df[ col_name ].value_counts())
-# binary encoding :
-    # - IoC deteced = 1 
-    # - pd.NA = 0
-df = catvar_mapping( col_name , [ "IoC Detected" ] , [ "/" ])
-piechart_col( col_name )
-
+    # Indicators of Compromise ( IoC ) detected by security systems
+    # IoC examples : malicious file hashes , suspicious domains , known attack patterns
+    col_name = "Malware Indicators"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # Anomaly Scores
 # -----------------------------------------------------------------------------
-# numerical score indicating how anomalous / suspicious the traffic is
-# higher scores suggest more deviation from normal behavior
-fig = px.histogram(
-    df ,
-    x = "Anomaly Scores" ,
-    title = "Distribution of Anomaly Scores" ,
-    labels = {
-        "Anomaly Scores" : "Anomaly Score" ,
-        "count" : "Frequency" } ,
-    color_discrete_sequence = [ "#EF553B" ]
-)
-fig.update_layout(
-    xaxis_title = "Anomaly Score ( higher = more suspicious )" ,
-    yaxis_title = "Number of Records" ,
-    showlegend = False
-)
-fig.show()
-
-# Alert Trigger
+    # numerical score indicating how anomalous / suspicious the traffic is
+    # higher scores suggest more deviation from normal behavior
+    fig = px.histogram(
+        df ,
+        x = "Anomaly Scores" ,
+        title = "Distribution of Anomaly Scores" ,
+        labels = {
+            "Anomaly Scores" : "Anomaly Score" ,
+            "count" : "Frequency" } ,
+        color_discrete_sequence = [ "#EF553B" ]
+    )
+    fig.update_layout(
+        xaxis_title = "Anomaly Score ( higher = more suspicious )" ,
+        yaxis_title = "Number of Records" ,
+        showlegend = False
+    )
+    fig.show()
+    
+# Alerts/Warnigns
 # -----------------------------------------------------------------------------
-# Whether the traffic triggered a security alert
-col_name = "Alert Trigger"
-# print( df[ col_name ].value_counts())
-# Binary encoding : 
-    # - Alert triggered = 1 , 
-    # - no alert = 0
-df = catvar_mapping( col_name , [ "Alert Triggered" ] , [ "/" ])
-piechart_col( col_name , names = [ "Alert triggered" , "Alert not triggered" ])
-
+    # Whether the traffic triggered a security alert
+    col_name = "Alerts/Warnings"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # Attack Signature
 # -----------------------------------------------------------------------------
-# Pattern matching results from signature-based detection systems
-# Known Pattern A vs Known Pattern B ( different attack signatures )
-col_name = "Attack Signature"
-print( df[ "Attack Signature" ].value_counts())
-# Binary encoding : 
-    # - Pattern A = 1
-    # - Pattern B = 0
-df = catvar_mapping( col_name , [ "Known Pattern A" ] , [ "patA" ])
-piechart_col( "Attack Signature patA" , [ "Pattern A" , "Pattern B" ])
-
+    # Pattern matching results from signature-based detection systems
+    # Known Pattern A vs Known Pattern B ( different attack signatures )
+    col_name = "Attack Signature"
+    print( df[ "Attack Signature" ].value_counts())
+    piechart_col( col_name )
+    
 # Action taken
 # -----------------------------------------------------------------------------
-# Response action by the security system
-    # - Logged : Traffic recorded for analysis
-    # - Blocked : Traffic denied/dropped
-    # - Ignored : No action taken
-col_name = "Action Taken"
-print( df[ col_name ].value_counts())
-df = catvar_mapping( col_name , [ "Logged" , "Blocked" ])
-piechart_col( col_name )
-
+    # Response action by the security system
+        # - Logged : Traffic recorded for analysis
+        # - Blocked : Traffic denied/dropped
+        # - Ignored : No action taken
+    col_name = "Action Taken"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # Severity Level
 # -----------------------------------------------------------------------------
-# Classification of threat severity
-col_name = "Severity Level"
-print( df[ col_name ].value_counts())
-# Ordinal encoding : 
-    # - Low = - 1 ,
-    # - Medium = 0 ,
-    # - High = + 1
-df.loc[ df[ col_name ] == "Low" , col_name ] = - 1
-df.loc[ df[ col_name ] == "Medium" , col_name ] = 0
-df.loc[ df[ col_name ] == "High" , col_name ] = + 1
-piechart_col( col_name , [ "Low" , "Medium" , "High" ])
-
-#%% Device Information
-# -----------------------------------------------------------------------------
-# This section parses User-Agent strings to extract :
-    # - Browser information ( family , version )
-    # - Operating system details
-    # - Device characteristics ( mobile , tablet , PC , bot )
+    # Classification of threat severity
+    col_name = "Severity Level"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name , [ "Low" , "Medium" , "High" ])
     
-# User-agent parsing and device classification ________________________________
-# The "Device Information" column contains User-Agent strings that reveal :
-    # - Browser : Chrome , Firefox , Safari , Edge , IE , etc.
-    # - Operating System : Windows , macOS , Linux , iOS , Android
-    # - Device Type : Desktop PC , Mobile phone , Tablet
-    # - Bot Detection : Automated crawlers vs human users
-# This information helps identify :
-    # - Attack vectors targeting specific platforms
-    # - Bot-driven attacks vs human-initiated threats
-    # - Vulnerable browser / OS combinations
-col_name = "Device Information"
-print( df[ col_name ].value_counts())
-col = df.columns.get_loc( col_name )
-col_insert = [ 
-        "Browser family" ,
-        "Browser major" ,
-        "Browser minor" ,
-        "OS family" ,
-        "OS major" ,
-        "OS minor" ,
-        "OS patch" ,
-        "Device family" ,
-        "Device brand" ,
-        "Device type" ,
-        "Device bot"
-        ]
-for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
-    df.insert( col , colnew_name , value = pd.NA )
-df[ "Browser family" ] = df[ col_name ].apply( lambda x : parse( x ).browser.family if parse( x ).browser.family is not None else pd.NA )
-df[ "Browser major" ] = df[ col_name ].apply( lambda x : parse( x ).browser.version[ 0 ] if parse( x ).browser.version[ 0 ] is not None else pd.NA )
-df[ "Browser minor" ] = df[ col_name ].apply( lambda x: parse( x ).browser.version[ 1 ] if parse( x ).browser.version[ 1 ] is not None else pd.NA )
-df[ "OS family" ] = df[ col_name ].apply( lambda x : parse( x ).os.family if parse( x ).os.family is not None else pd.NA )
-df[ "OS major" ] = df[ col_name ].apply( lambda x : parse( x ).os.version[ 0 ] if len( parse( x ).os.version ) > 0 and parse( x ).os.version[ 0 ] is not None else pd.NA )
-df[ "OS minor" ] = df[ col_name ].apply( lambda x : parse( x ).os.version[ 1 ] if len( parse( x ).os.version ) > 1 and parse( x ).os.version[ 1 ] is not None else pd.NA )
-df[ "OS patch" ] = df[ col_name ].apply( lambda x : parse( x ).os.version[ 2 ] if len( parse( x ).os.version ) > 2 and parse( x ).os.version[ 2 ] is not None else pd.NA )
-df[ "Device family" ] = df[ col_name ].apply (lambda x : parse( x ).device.family if parse( x ).device.family is not None else pd.NA )
-df[ "Device brand" ] = df[ col_name].apply( lambda x : parse( x ).device.brand if parse( x ).device.brand is not None else pd.NA )
-df[ "Device type" ] = df[ col_name ].apply( lambda x : Device_type( x ))
-df[ "Device bot" ] = df[ col_name ].apply( lambda x: ua_parse( x ).is_bot )
-
-col_name = "Browser family"
-print( df[ col_name ].value_counts())
-df = catvar_mapping( col_name , [ "Logged" , "Blocked" ]) # !!!!! TO BE REVIEWED !!!!!!
-piechart_col( col_name )
-
-#%% Network Segment
+# Device Information
 # -----------------------------------------------------------------------------
-# this section analyzes network segmentation and security system logs
-# network segments represent logical divisions of the network :
-    # - Segment A , B , C : Different network zones ( e.g. , DMZ , internal , guest )
-    # - Segmentation helps contain breaches and control traffic flow
-col_name = "Network Segment"
-print( df[ col_name ].value_counts())
-# binary encoding , creates indicator columns for DNS and HTTP : 
-    # - segA = { 1 if Network Segment = "Segment A" , 0 otherwise }
-    # - segB = { 1 if Network Segment = "Segment B" , 0 otherwise }
-df = catvar_mapping( col_name , [ "Segment A" , "Segment B" ] , [ "segA" , "segB" ]) 
-piechart_col( col_name )
-
+    # This section parses User-Agent strings to extract :
+        # - Browser information ( family , version )
+        # - Operating system details
+        # - Device characteristics ( mobile , tablet , PC , bot )
+        
+    # User-agent parsing and device classification ____________________________
+    # The "Device Information" column contains User-Agent strings that reveal :
+        # - Browser : Chrome , Firefox , Safari , Edge , IE , etc.
+        # - Operating System : Windows , macOS , Linux , iOS , Android
+        # - Device Type : Desktop PC , Mobile phone , Tablet
+        # - Bot Detection : Automated crawlers vs human users
+    # This information helps identify :
+        # - Attack vectors targeting specific platforms
+        # - Bot-driven attacks vs human-initiated threats
+        # - Vulnerable browser / OS combinations
+    col_name = "Device Information"
+    print( df[ col_name ].value_counts())
+    col = df.columns.get_loc( col_name )
+    col_insert = [ 
+            "Browser family" ,
+            "Browser major" ,
+            "Browser minor" ,
+            "OS family" ,
+            "OS major" ,
+            "OS minor" ,
+            "OS patch" ,
+            "Device family" ,
+            "Device brand" ,
+            "Device type" ,
+            "Device bot"
+            ]
+    for col , colnew_name in zip( range( col + 1 , col + len( col_insert ) + 1 ) , col_insert ) :
+        df.insert( col , colnew_name , value = pd.NA )
+    df[ "Browser family" ] = df[ col_name ].apply( lambda x : parse( x ).browser.family if parse( x ).browser.family is not None else pd.NA )
+    df[ "Browser major" ] = df[ col_name ].apply( lambda x : parse( x ).browser.version[ 0 ] if parse( x ).browser.version[ 0 ] is not None else pd.NA )
+    df[ "Browser minor" ] = df[ col_name ].apply( lambda x: parse( x ).browser.version[ 1 ] if parse( x ).browser.version[ 1 ] is not None else pd.NA )
+    df[ "OS family" ] = df[ col_name ].apply( lambda x : parse( x ).os.family if parse( x ).os.family is not None else pd.NA )
+    df[ "OS major" ] = df[ col_name ].apply( lambda x : parse( x ).os.version[ 0 ] if len( parse( x ).os.version ) > 0 and parse( x ).os.version[ 0 ] is not None else pd.NA )
+    df[ "OS minor" ] = df[ col_name ].apply( lambda x : parse( x ).os.version[ 1 ] if len( parse( x ).os.version ) > 1 and parse( x ).os.version[ 1 ] is not None else pd.NA )
+    df[ "OS patch" ] = df[ col_name ].apply( lambda x : parse( x ).os.version[ 2 ] if len( parse( x ).os.version ) > 2 and parse( x ).os.version[ 2 ] is not None else pd.NA )
+    df[ "Device family" ] = df[ col_name ].apply (lambda x : parse( x ).device.family if parse( x ).device.family is not None else pd.NA )
+    df[ "Device brand" ] = df[ col_name].apply( lambda x : parse( x ).device.brand if parse( x ).device.brand is not None else pd.NA )
+    df[ "Device type" ] = df[ col_name ].apply( lambda x : Device_type( x ))
+    df[ "Device bot" ] = df[ col_name ].apply( lambda x: ua_parse( x ).is_bot )
+    
+    col_name = "Browser family"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
+# Network Segment
+# -----------------------------------------------------------------------------
+    # this section analyzes network segmentation and security system logs
+    # network segments represent logical divisions of the network :
+        # - Segment A , B , C : Different network zones ( e.g. , DMZ , internal , guest )
+        # - Segmentation helps contain breaches and control traffic flow
+    col_name = "Network Segment"
+    print( df[ col_name ].value_counts()) 
+    piechart_col( col_name )
+    
 # Geo-location Data
 # -----------------------------------------------------------------------------
-# parse "City, State" format into separate columns for geographic analysis
-col_name = "Geo-location Data"
-print( df[ col_name ].value_counts())
-col = df.columns.get_loc( col_name )
-df.insert( col + 1 , "Geo-location City" , value = pd.NA )
-df.insert( col + 2 , "Geo-location State" , value = pd.NA )
-df[[ "Geo-location City" , "Geo-location State" ]] = df[ "Geo-location Data" ].apply( lambda x : geolocation_data( x ))
-
+    # parse "City, State" format into separate columns for geographic analysis
+    col_name = "Geo-location Data"
+    print( df[ col_name ].value_counts())
+    col = df.columns.get_loc( col_name )
+    df.insert( col + 1 , "Geo-location City" , value = pd.NA )
+    df.insert( col + 2 , "Geo-location State" , value = pd.NA )
+    df[[ "Geo-location City" , "Geo-location State" ]] = df[ "Geo-location Data" ].apply( lambda x : geolocation_data( x ))
+    
 # Firewall Logs
 # -----------------------------------------------------------------------------
-# records of traffic allowed / denied by firewall rules
-col_name = "Firewall Logs"
-print( df[ col_name ].value_counts())
-# Binary encoding :
-    # - Log Data = 1 ,
-    # - pd.NA = 0
-df = catvar_mapping( col_name , [ "Log Data" ] , [ "/" ])
-# piechart_col( col_name , [ "Log Data" , "No Log Data" ])
-
+    # records of traffic allowed / denied by firewall rules
+    col_name = "Firewall Logs"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # IDS/IPS Alerts
 # -----------------------------------------------------------------------------
-# Intrusion Detection / Prevention System alerts
-col_name = "IDS/IPS Alerts"
-print( df[ col_name ].value_counts())
-# Binary encoding :
-    # - Alert data = 1 ,
-    # - pd.NA = 0
-bully = df[ col_name ] == "Alert Data"
-df = catvar_mapping( col_name , [ "Alert Data" ] , [ "/" ])
-# piechart_col( col_name , [ "Alert Data" , "No Alert Data" ])
-
+    # Intrusion Detection / Prevention System alerts
+    col_name = "IDS/IPS Alerts"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
 # Log Source
 # -----------------------------------------------------------------------------
-# origin of the log entry
-col_name = "Log Source"
-print( df[ col_name ].value_counts())
-# Binary encoding :
-    # - Firewall = 1
-    # - Server = 0
-df = catvar_mapping( col_name , [ "Firewall" ] , [ "Firewall" ])
-# piechart_col( col_name , [ "Firewall" , "Server" ])
+    # origin of the log entry
+    col_name = "Log Source"
+    print( df[ col_name ].value_counts())
+    piechart_col( col_name )
+    
+    return df
+
+df_original = EDA_DataPrep_PIPELINE( df_original )
 
 #%% Feature Engineering 10 : Aggregates by day
 target_cols = [ "Attack Type" , "Protocol" , "Source Port ephemeral" , "Traffic Type" , "Alert Trigger" , "Firewall Logs" , "Attack Signature patA" , "Action Taken" , "Browser family" ]
@@ -1572,16 +2065,6 @@ for target_col in target_cols :
                 max_n_dlags_col , 
                 df[ max_n_dlags_col ].value_counts().index[ : - 1 ]
                 )
-
-#%% seperat dfs for attack types
-# -----------------------------------------------------------------------------
-# Attack Type Segmentation
-# Create separate DataFrames for each attack type to enable
-# comparative analysis between Malware, Intrusion, and DDoS attacks
-df_attype = {}
-attypes = [ "Malware" , "Intrusion" , "DDoS" ]
-for attype in attypes :
-    df_attype[ attype ] = df[ df[ "Attack Type"] == attype ]
 
 #%% geo plot of "Attack Type" by "Anomaly Score"
 # -----------------------------------------------------------------------------
@@ -1923,555 +2406,10 @@ else :
 
 
 
-#%% Modelling
+#%% Modelling PIPELINE
 # -----------------------------------------------------------------------------
 
 crosstabs_x_AttackType = {}
-
-def logit( attypes , x_train , x_test , y_train , y_test ) :
-    """
-    Train a Logistic Regression classifier.
-
-    Parameters
-    ----------
-    attypes : array-like
-        Attack type labels ( not used inside this function ).
-    x_train : array-like
-        Training feature matrix.
-    x_test : array-like
-        Test feature matrix ( not used inside this function ).
-    y_train : array-like
-        Training target labels.
-    y_test : array-like
-        Test target labels ( not used inside this function ).
-
-    Returns
-    -------
-    model : sklearn.linear_model.LogisticRegression
-        Fitted Logistic Regression model.
-    """
-    
-    model = skl.linear_model.LogisticRegression(
-        solver = "lbfgs" ,
-        max_iter = 1000
-    )
-    model.fit( x_train , y_train )
-    
-    return model
-
-def randomforrest( attypes , x_train , x_test , y_train , y_test ) :
-    """
-    Train a Random Forest classifier.
-
-    Parameters
-    ----------
-    attypes : array-like
-        Attack type labels ( not used inside this function ).
-    x_train : array-like
-        Training feature matrix.
-    x_test : array-like
-        Test feature matrix ( not used inside this function ).
-    y_train : array-like
-        Training target labels.
-    y_test : array-like
-        Test target labels ( not used inside this function ).
-
-    Returns
-    -------
-    model : sklearn.ensemble.RandomForestClassifier
-        Fitted Random Forest model.
-    """
-    
-    model = skl.ensemble.RandomForestClassifier(
-        n_estimators = 100 ,
-        max_depth = None ,
-        random_state = 1 ,
-        n_jobs = - 1
-        )
-    model.fit( x_train , y_train )
-    return model
-
-def model_predictions( model , x_test ) :
-    """
-    Generate predictions and class probabilities from a trained model.
-
-    Parameters
-    ----------
-    model : sklearn-like estimator
-        Fitted classification model implementing:
-            - predict()
-            - predict_proba()
-    x_test : array-like
-        Test feature matrix used for inference.
-
-    Returns
-    -------
-    y_pred : array-like
-        Predicted class labels.
-    y_prob : array-like
-        Predicted class probabilities.
-        Shape typically:
-            ( n_samples , n_classes )
-    """
-    
-    y_pred = model.predict( x_test )
-    y_prob = model.predict_proba( x_test )
-    
-    return y_pred , y_prob
-
-def model_metrics( attypes , model , x_train , x_test , y_train , y_test , y_pred , y_prob ) :
-    """
-    Compute and visualize classification metrics.
-
-    This function performs :
-        1. Confusion matrix visualization
-        2. Accuracy and classification report
-        3. Multiclass ROC curves with AUC
-        4. Mutual Information feature importance
-
-    Parameters
-    ----------
-    attypes : list-like
-        Ordered class labels used for display and evaluation.
-    model : fitted estimator
-        Trained classification model ( not directly used here ).
-    x_train , x_test : array-like
-        Feature matrices.
-    y_train , y_test : array-like
-        True labels.
-    y_pred : array-like
-        Predicted class labels.
-    y_prob : array-like
-        Predicted class probabilities.
-    """
-    
-    # confusion matrix ________________________________________________________
-    confmat = pd.DataFrame(
-        skl.metrics.confusion_matrix( y_test , y_pred ) ,
-        index = attypes ,
-        columns = attypes
-    )
-    fig = px.imshow(
-        confmat ,
-        text_auto = True ,
-        color_continuous_scale = "Magma" ,
-        title = "Confusion Matrix"
-    )
-    fig.update_layout(
-        xaxis_title = "Predicted Class" ,
-        yaxis_title = "True Class"
-    )
-    fig.show()
-    
-    # metrics evaluation ______________________________________________________
-    accscore = skl.metrics.accuracy_score( y_test , y_pred )
-    print( f"Accuracy = { accscore }" )
-    print( "\nClassification Report :\n" )
-    print( skl.metrics.classification_report( y_test , y_pred , target_names = attypes ))
-    
-    # ROC curve computation ___________________________________________________
-    y_test_bin = label_binarize( y_test , classes = np.arange( len( attypes )))
-    n_classes = y_test_bin.shape[ 1 ]
-    fig_roc = go.Figure()
-    for yclass in range( n_classes ) :
-        fpr , tpr , _ = skl.metrics.roc_curve( y_test_bin[ : , yclass ] , y_prob[ : , yclass ])
-        roc_auc = skl.metrics.auc( fpr , tpr )
-    
-        fig_roc.add_trace( go.Scatter(
-            x = fpr ,
-            y = tpr ,
-            mode = "lines" ,
-            name = f"{ attypes[ yclass ]} ( AUC = { roc_auc })"
-        ))
-    ## random baseline
-    fig_roc.add_trace(go.Scatter(
-        x = [ 0 , 1 ] ,
-        y = [ 0 , 1 ] ,
-        mode = "lines" ,
-        line = dict( dash = "dash" ) ,
-        name = "Random"
-    ))
-    fig_roc.update_layout(
-        title = "Multiclass ROC Curve" ,
-        xaxis_title = "False Positive Rate" ,
-        yaxis_title = "True Positive Rate" ,
-        legend_title = "Classes" ,
-        template = "plotly_dark"
-    )
-    fig_roc.show()
-    
-    # marginal information ____________________________________________________
-    marginfo_scores = skl.feature_selection.mutual_info_classif(
-        x_train ,
-        y_train ,
-        discrete_features = "auto" ,
-        random_state = 100
-    )
-    marginfo = pd.Series(
-        marginfo_scores ,
-        index = x_train.columns
-    ).sort_values( ascending = False )
-    fig = px.bar(
-        marginfo ,
-        x = list( marginfo.values ) ,
-        y = marginfo.index ,
-        orientation = "h" ,
-        text = marginfo.values ,
-        title = "Mutual Information Scores" ,
-        labels = { "x" : "Marginal Information score" , "y" : "Feature" }
-        )
-    fig.update_traces( 
-        texttemplate = "%{x:.4f}" , 
-        textposition = "outside" )
-    fig.update_layout( 
-        yaxis = dict( autorange = "reversed" ) ,
-        barcornerradius = 15 ,
-        bargap = 0.2 ,
-        uniformtext_minsize = 8 ,
-        uniformtext_mode = "hide"
-        )
-    fig.show()
-
-def feature_engineering( 
-        features_mask , 
-        threshold_floor , 
-        contvar_nobs_b_class ,
-        dynamic_threshold_pars 
-        ) :
-    """
-    Build engineered bias-based feature columns according to a feature mask.
-
-    The function :
-        1. Selects feature groups based on features_mask .
-        2. Builds class bins ( for continuous variables when needed ) .
-        3. Computes crosstabs for selected column combinations .
-        4. Applies df_bias_classes() to generate ordinal bias features .
-        5. Returns list of generated feature column names .
-
-    Parameters
-    ----------
-    features_mask : iterable of bool
-        Mask selecting which feature groups to activate .
-    threshold_floor : numeric
-        Base threshold used inside df_bias_classes() .
-    contvar_nobs_b_class : int
-        Minimum number of observations per bin when discretizing
-        continuous variables.
-    dynamic_threshold_pars : tuple
-        Parameters passed to dynamic_threshold() .
-
-    Returns
-    -------
-    list
-        Names of all generated engineered feature columns.
-    """
-    
-    # define all available feature groups
-    features_existing = np.array([
-        "Source Port & Destination Port" ,
-        "Source IP latitude/longitude combination & Destination IP latitude/longitude combination" ,
-        "Sounce IP Country , Destination IP country combination" ,
-        "date dd" ,
-        "Network & Traffic" ,
-        "Security Response" ,
-        "time decomposition" ,
-        "Anomaly Scores" ,
-        "Packet Length"
-        ])
-    features_selected = features_existing[ np.array( features_mask )] # select only activated feature groups
-    X_cols = [] # store names of generated columns
-    
-    # Source Port & Destination Port
-    # -------------------------------------------------------------------------
-    if "Source Port & Destination Port" in features_selected :
-        
-        # process both source and destination ports independently
-        for SourDest in [ "Source" , "Destination" ] :
-            target_col = f"{ SourDest } Port"
-            # discretize continuous port values into bins
-            colclass_name = contvar_classes_builder_bycount_bynobs( 
-                df , 
-                target_col , 
-                contvar_nobs_b_class 
-                )
-            # build crosstab on discretized class
-            crosstab_name = crosstab_col( df , [ colclass_name ])
-            # generate bias features
-            X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
-            
-    # Source IP latitude/longitude combination & Destination IP latitude/longitude combination
-    # -------------------------------------------------------------------------
-    if "Source IP latitude/longitude combination & Destination IP latitude/longitude combination" in features_selected : 
-        for SourDest in [ 
-                "Source" , 
-                "Destination" 
-                ] :
-            colclass_names = []
-            # discretize longitude and latitude separately
-            for lonlat in [ "longitude" , "latitude" ] :
-                target_col = f"{ SourDest } IP { lonlat }"
-                # colclass_name = classes_builder( target_col , 40 )
-                colclass_name = contvar_classes_builder_bycount_bynobs( df , target_col , contvar_nobs_b_class )
-                colclass_names.append( colclass_name )
-            # extend with categorical security-related variables
-            colclass_names.extend([
-                # "Protocol" , # <------- these for 
-                # "Packet Type" ,
-                # "Traffic Type" ,
-                # "Attack Signature patA" ,
-                # "Network Segment" ,
-                # "Proxy usage" ,
-                
-                "Malware Indicators" ,
-                "Alert Trigger" ,
-                "Action Taken" ,
-                "Severity Level" ,
-                "Log Source Firewall" ,
-                "Firewall Logs" ,
-                "IDS/IPS Alerts" ,
-                ])
-            # build crosstab
-            crosstab_name = crosstab_col( df , [ col for col in colclass_names ])
-            # generate bias features
-            X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , colclass_names , dynamic_threshold_pars ))
-            
-    # Sounce IP Country , Destination IP country combination
-    # -------------------------------------------------------------------------
-    if "Sounce IP Country , Destination IP country combination" in features_selected :
-        colclass_names = [ 
-            "Source IP country" , 
-            "Destination IP country" ,
-            
-            # "Protocol" , 
-            # "Packet Type" ,
-            # "Traffic Type" ,
-            # "Attack Signature patA" ,
-            # "Network Segment" ,
-            # "Proxy usage" ,
-            
-            # "Malware Indicators" ,
-            # "Alert Trigger" ,
-            # "Action Taken" ,
-            # "Severity Level" ,
-            # "Log Source Firewall" ,
-            # "Firewall Logs" ,
-            # "IDS/IPS Alerts" ,
-            
-            ]
-        crosstab_name = crosstab_col( df , [ col for col in colclass_names ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , colclass_names , dynamic_threshold_pars ))
-        
-    # date dd
-    # -------------------------------------------------------------------------
-    if "date dd" in features_selected :
-        crosstab_name = crosstab_col( df , [ "date dd" ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
-        
-    # Network & Traffic
-    # -------------------------------------------------------------------------
-    if "Network & Traffic" in features_selected :
-        columns = [
-            "Protocol" , 
-            "Packet Type" ,
-            "Traffic Type" ,
-            "Attack Signature patA" ,
-            "Network Segment" ,
-            "Proxy usage" ,
-            
-            "Browser family" ,
-            "OS family" ,
-            "Device type" ,
-            ]
-        crosstab_name = crosstab_col( df , [ col for col in columns ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , columns , dynamic_threshold_pars ))
-        
-    # Security Response
-    # -------------------------------------------------------------------------
-    if "Security Response" in features_selected : 
-        columns = [
-            "Malware Indicators" ,
-            "Alert Trigger" ,
-            "Action Taken" ,
-            "Severity Level" ,
-            "Log Source Firewall" ,
-            "Firewall Logs" ,
-            "IDS/IPS Alerts" ,
-            "Severity Level" ,
-            
-            "Browser family" ,
-            "OS family" ,
-            "Device type" ,
-            ]
-        crosstab_name = crosstab_col( df , [ col for col in columns ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , columns , dynamic_threshold_pars ))
-        
-    # time
-    # -------------------------------------------------------------------------
-    if "time decomposition" in features_selected :
-        columns = { 
-            "date MW" , 
-            "date WD" , 
-            "date H" ,
-            "date M" , # <------------ buddy here dropped my accurage by 2 whole percent, turned my marginal info to dust !!!!!!!!!!!
-            # "Browser family" ,
-            # "OS family" ,
-            # "Device type" ,
-            # "Malware Indicators" ,
-            }
-        crosstab_name = crosstab_col( df , [ col for col in columns ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , columns , dynamic_threshold_pars ))
-        
-    # Anomaly Scores
-    # -------------------------------------------------------------------------
-    if "Anomaly Scores" in features_selected : 
-        colclass_name = contvar_classes_builder_bycount_bynobs( df , "Anomaly Scores" , contvar_nobs_b_class )
-        crosstab_name = crosstab_col( df , [ colclass_name ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
-        
-    # Packet Length
-    # -------------------------------------------------------------------------
-    if "Packet Length" in features_selected : 
-        colclass_name = contvar_classes_builder_bycount_bynobs( df , "Packet Length" , contvar_nobs_b_class )
-        # colclass_names = [ colclass_name , "Protocol" ]
-        crosstab_name = crosstab_col( df , [ colclass_name ])
-        X_cols.extend( df_bias_classes( df , crosstab_name , threshold_floor , crosstab_name , dynamic_threshold_pars ))
-        
-    return X_cols
-
-def modelling( testp , features_mask , threshold_floor , contvar_nobs_b_class , dynamic_threshold_pars , model_type = "logit" , split_before_training = False ) :
-    """
-    End-to-end modelling pipeline.
-
-    The function :
-        1. Optionally performs train / test split before or after feature engineering .
-        2. Builds engineered bias-based features .
-        3. Encodes target labels .
-        4. Trains selected model type .
-        5. Computes predictions and evaluation metrics .
-        6. Returns test predictions .
-
-    Parameters
-    ----------
-    testp : float
-        Proportion of dataset used for testing ( 0 < testp < 1 ) .
-    features_mask : iterable of bool
-        Controls which feature groups are activated .
-    threshold_floor : numeric
-        Base bias threshold passed to feature engineering .
-    contvar_nobs_b_class : int
-        Minimum number of observations per continuous bin .
-    dynamic_threshold_pars : tuple
-        Parameters controlling dynamic threshold function .
-    model_type : str
-        "logit" or "randomforrest" .
-    split_before_training : bool
-        If False :
-            Feature engineering is performed on full dataset
-            before train / test split .
-        If True :
-            Dataset is split first , then features are used
-            on train and test subsets .
-
-    Returns
-    -------
-    y_pred : array-like
-        Predicted class labels for test set .
-    """
-    
-    global df
-    attypes = df[ "Attack Type" ].unique()
-    
-    # =========================================================================
-    # CASE 1 : SPLIT AFTER FEATURE ENGINEERING
-    # =========================================================================
-    if split_before_training == False :
-        # build engineered features on entire dataset
-        X_cols = feature_engineering( 
-            features_mask , 
-            threshold_floor , 
-            contvar_nobs_b_class , 
-            dynamic_threshold_pars 
-            )
-        df = df.copy() # copy dataframe to avoid fragmentation
-        
-        # separate predictors and target
-        x_vars = df[ X_cols ]
-        y_var = df[ "Attack Type" ]
-        
-        # encode categorical target into integers
-        y = LabelEncoder()
-        y_var = y.fit_transform( y_var )
-        
-        # stratif tryain / test split
-        x_train , x_test , y_train , y_test = skl.model_selection.train_test_split(
-            x_vars ,
-            y_var ,
-            test_size = testp ,
-            random_state = 50 ,
-            stratify = y_var
-        )
-    # =========================================================================
-    # CASE 2 : SPLIT BEFORE FEATURE ENGINEERING ----- not operational
-    # =========================================================================
-    else :
-        # split raw dataset first
-        df_train , df_test = skl.model_selection.train_test_split(
-            df ,
-            test_size = testp ,
-            train_size = ( 1 - testp ) ,
-            stratify = df[ "Attack Type" ] ,
-            random_state = 42
-            )
-        
-        # build engineered features on entire train and test dataset
-        X_cols = feature_engineering( 
-            features_mask , 
-            threshold_floor , 
-            contvar_nobs_b_class , 
-            dynamic_threshold_pars 
-            ) # df to be modified !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        # copy dataframes to avoid fragmentation
-        df_train = df_train.copy()
-        df_test = df_test.copy()
-        
-        # extract engineered features from train and test splits
-        x_train = df_train[ X_cols ]
-        x_test = df_test[ X_cols ]
-        
-        y = LabelEncoder()
-        # encode training labels
-        y_train = df_train[ "Attack Type" ]
-        y_train = y.fit_transform( y_train )
-        # encode test labels
-        y_test = df_test[ "Attack Type" ]
-        y_test = y.fit_transform( y_test )
-    
-    # =========================================================================
-    # MODEL SELECTION
-    # =========================================================================
-    if model_type == "logit" :
-        model = logit( attypes , x_train , x_test , y_train , y_test )
-    elif model_type == "randomforrest" :
-        model = randomforrest( attypes , x_train , x_test , y_train , y_test )
-    else :
-        print( "model type is nor recognized" )
-    
-    # =========================================================================
-    # PREDICTION AND EVALUATION
-    # =========================================================================
-    y_pred , y_prob = model_predictions( model , x_test )
-    model_metrics( 
-        attypes , 
-        model , 
-        x_train , 
-        x_test , 
-        y_train ,
-        y_test , 
-        y_pred , 
-        y_prob 
-        )
-    
-    return y_pred
 
 features_mask = [
         True , # "Source Port & Destination Port"
@@ -2486,7 +2424,7 @@ features_mask = [
         ]
 threshold_floor = 37.5
 nobs_floor = 10
-y_pred = modelling( 0.1 , features_mask , threshold_floor , 15 , [ 5 , 100 , nobs_floor , threshold_floor ] , "logit" , False )
+y_pred = Modelling_PIPELINE( 0.1 , features_mask , threshold_floor , 15 , [ 5 , 100 , nobs_floor , threshold_floor ] , "logit" , False )
 
 #%% Interpretation
 
