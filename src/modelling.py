@@ -1,0 +1,301 @@
+"""Machine learning modelling: training, prediction, and evaluation."""
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import sklearn as skl
+from sklearn.preprocessing import LabelEncoder, label_binarize
+
+from src.config import show_fig
+from src.feature_engineering import feature_engineering
+
+
+def logit(attypes, x_train, x_test, y_train, y_test):
+    """Train a Logistic Regression classifier.
+
+    Parameters
+    ----------
+    attypes : array-like
+        Attack type labels (not used inside this function).
+    x_train : array-like
+        Training feature matrix.
+    x_test : array-like
+        Test feature matrix (not used inside this function).
+    y_train : array-like
+        Training target labels.
+    y_test : array-like
+        Test target labels (not used inside this function).
+
+    Returns
+    -------
+    model : sklearn.linear_model.LogisticRegression
+        Fitted Logistic Regression model.
+    """
+    model = skl.linear_model.LogisticRegression(solver="lbfgs", max_iter=1000)
+    model.fit(x_train, y_train)
+    return model
+
+
+def randomforrest(attypes, x_train, x_test, y_train, y_test):
+    """Train a Random Forest classifier.
+
+    Parameters
+    ----------
+    attypes : array-like
+        Attack type labels (not used inside this function).
+    x_train : array-like
+        Training feature matrix.
+    x_test : array-like
+        Test feature matrix (not used inside this function).
+    y_train : array-like
+        Training target labels.
+    y_test : array-like
+        Test target labels (not used inside this function).
+
+    Returns
+    -------
+    model : sklearn.ensemble.RandomForestClassifier
+        Fitted Random Forest model.
+    """
+    model = skl.ensemble.RandomForestClassifier(
+        n_estimators=100, max_depth=None, random_state=1, n_jobs=-1
+    )
+    model.fit(x_train, y_train)
+    return model
+
+
+def model_predictions(model, x_test):
+    """Generate predictions and class probabilities from a trained model.
+
+    Parameters
+    ----------
+    model : sklearn-like estimator
+        Fitted classification model.
+    x_test : array-like
+        Test feature matrix.
+
+    Returns
+    -------
+    y_pred : array-like
+        Predicted class labels.
+    y_prob : array-like
+        Predicted class probabilities.
+    """
+    y_pred = model.predict(x_test)
+    y_prob = model.predict_proba(x_test)
+    return y_pred, y_prob
+
+
+def model_metrics(attypes, model, x_train, x_test, y_train, y_test, y_pred, y_prob):
+    """Compute and visualize classification metrics.
+
+    Generates confusion matrix, accuracy, classification report,
+    multiclass ROC curves, and mutual information feature importance.
+
+    Parameters
+    ----------
+    attypes : list-like
+        Ordered class labels.
+    model : fitted estimator
+        Trained classification model.
+    x_train, x_test : array-like
+        Feature matrices.
+    y_train, y_test : array-like
+        True labels.
+    y_pred : array-like
+        Predicted class labels.
+    y_prob : array-like
+        Predicted class probabilities.
+    """
+    # Confusion matrix
+    confmat = pd.DataFrame(
+        skl.metrics.confusion_matrix(y_test, y_pred),
+        index=attypes,
+        columns=attypes,
+    )
+    fig = px.imshow(
+        confmat,
+        text_auto=True,
+        color_continuous_scale="Magma",
+        title="Confusion Matrix",
+    )
+    fig.update_layout(xaxis_title="Predicted Class", yaxis_title="True Class")
+    show_fig(fig)
+
+    # Metrics evaluation
+    accscore = skl.metrics.accuracy_score(y_test, y_pred)
+    print(f"Accuracy = {accscore}")
+    print("\nClassification Report :\n")
+    print(skl.metrics.classification_report(y_test, y_pred, target_names=attypes))
+
+    # ROC curve
+    y_test_bin = label_binarize(y_test, classes=np.arange(len(attypes)))
+    n_classes = y_test_bin.shape[1]
+    fig_roc = go.Figure()
+    for yclass in range(n_classes):
+        fpr, tpr, _ = skl.metrics.roc_curve(
+            y_test_bin[:, yclass], y_prob[:, yclass]
+        )
+        roc_auc = skl.metrics.auc(fpr, tpr)
+        fig_roc.add_trace(
+            go.Scatter(
+                x=fpr,
+                y=tpr,
+                mode="lines",
+                name=f"{attypes[yclass]} ( AUC = {roc_auc})",
+            )
+        )
+    fig_roc.add_trace(
+        go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode="lines",
+            line=dict(dash="dash"),
+            name="Random",
+        )
+    )
+    fig_roc.update_layout(
+        title="Multiclass ROC Curve",
+        xaxis_title="False Positive Rate",
+        yaxis_title="True Positive Rate",
+        legend_title="Classes",
+        template="plotly_dark",
+    )
+    fig_roc.show()
+
+    # Mutual information
+    marginfo_scores = skl.feature_selection.mutual_info_classif(
+        x_train, y_train, discrete_features="auto", random_state=100
+    )
+    marginfo = pd.Series(marginfo_scores, index=x_train.columns).sort_values(
+        ascending=False
+    )
+    fig = px.bar(
+        marginfo,
+        x=list(marginfo.values),
+        y=marginfo.index,
+        orientation="h",
+        text=marginfo.values,
+        title="Mutual Information Scores",
+        labels={"x": "Marginal Information score", "y": "Feature"},
+    )
+    fig.update_traces(texttemplate="%{x:.4f}", textposition="outside")
+    fig.update_layout(
+        yaxis=dict(autorange="reversed"),
+        barcornerradius=15,
+        bargap=0.2,
+        uniformtext_minsize=8,
+        uniformtext_mode="hide",
+    )
+    show_fig(fig)
+
+
+def modelling(
+    df,
+    crosstabs_x_AttackType,
+    testp,
+    features_mask,
+    threshold_floor,
+    contvar_nobs_b_class,
+    dynamic_threshold_pars,
+    model_type="logit",
+    split_before_training=False,
+):
+    """End-to-end modelling pipeline.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Main DataFrame.
+    crosstabs_x_AttackType : dict
+        Crosstab dictionary (will be reset inside).
+    testp : float
+        Proportion of dataset used for testing.
+    features_mask : iterable of bool
+        Controls which feature groups are activated.
+    threshold_floor : numeric
+        Base bias threshold.
+    contvar_nobs_b_class : int
+        Minimum number of observations per continuous bin.
+    dynamic_threshold_pars : tuple
+        Parameters controlling dynamic threshold function.
+    model_type : str
+        "logit" or "randomforrest".
+    split_before_training : bool
+        If False, feature engineering on full dataset before split.
+        If True, split first then build features (not fully operational).
+
+    Returns
+    -------
+    y_pred : array-like
+        Predicted class labels for test set.
+    df : pd.DataFrame
+        DataFrame after feature engineering (potentially modified).
+    """
+    attypes = df["Attack Type"].unique()
+
+    # Reset crosstabs for modelling
+    crosstabs_x_AttackType.clear()
+
+    if not split_before_training:
+        X_cols = feature_engineering(
+            df,
+            crosstabs_x_AttackType,
+            features_mask,
+            threshold_floor,
+            contvar_nobs_b_class,
+            dynamic_threshold_pars,
+        )
+        df = df.copy()
+
+        x_vars = df[X_cols]
+        y_var = df["Attack Type"]
+
+        y = LabelEncoder()
+        y_var = y.fit_transform(y_var)
+
+        x_train, x_test, y_train, y_test = skl.model_selection.train_test_split(
+            x_vars, y_var, test_size=testp, random_state=50, stratify=y_var
+        )
+    else:
+        df_train, df_test = skl.model_selection.train_test_split(
+            df,
+            test_size=testp,
+            train_size=(1 - testp),
+            stratify=df["Attack Type"],
+            random_state=42,
+        )
+
+        X_cols = feature_engineering(
+            df,
+            crosstabs_x_AttackType,
+            features_mask,
+            threshold_floor,
+            contvar_nobs_b_class,
+            dynamic_threshold_pars,
+        )
+        df_train = df_train.copy()
+        df_test = df_test.copy()
+
+        x_train = df_train[X_cols]
+        x_test = df_test[X_cols]
+
+        y = LabelEncoder()
+        y_train = y.fit_transform(df_train["Attack Type"])
+        y_test = y.fit_transform(df_test["Attack Type"])
+
+    if model_type == "logit":
+        model = logit(attypes, x_train, x_test, y_train, y_test)
+    elif model_type == "randomforrest":
+        model = randomforrest(attypes, x_train, x_test, y_train, y_test)
+    else:
+        print("model type is not recognized")
+        return None, df
+
+    y_pred, y_prob = model_predictions(model, x_test)
+    model_metrics(
+        attypes, model, x_train, x_test, y_train, y_test, y_pred, y_prob
+    )
+
+    return y_pred, df

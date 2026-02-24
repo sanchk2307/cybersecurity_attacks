@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tail:*)",
+      "Bash(cd:*)",
+      "Bash(cd /c/Users/eugen/cybersecurity_attacks && pixi run python script.py 2>&1)",
+      "Bash(cd /c/Users/eugen/cybersecurity_attacks && pixi install 2>&1)",
+      "Bash(cd /c/Users/eugen/cybersecurity_attacks && rm -f data/df.csv && time pixi run python script.py --no-figures 2>&1)"
+    ]
+  }
+}
