@@ -2135,8 +2135,7 @@ def model_metrics( attypes , model , x_train , x_test , y_train , y_test , y_pre
 def feature_engineering( 
         features_mask , 
         threshold_floor , 
-        contvar_nobs_b_class , 
-        filter_nobs_min , 
+        contvar_nobs_b_class ,
         dynamic_threshold_pars 
         ) :
     """
@@ -2158,8 +2157,6 @@ def feature_engineering(
     contvar_nobs_b_class : int
         Minimum number of observations per bin when discretizing
         continuous variables.
-    filter_nobs_min : int
-        ( Currently unused in this function . )
     dynamic_threshold_pars : tuple
         Parameters passed to dynamic_threshold() .
 
@@ -2489,7 +2486,7 @@ features_mask = [
         ]
 threshold_floor = 37.5
 nobs_floor = 10
-y_pred = modelling( 0.1 , features_mask , threshold_floor , 15 , nobs_floor , [ 5 , 100 , nobs_floor , threshold_floor ] , "logit" , False )
+y_pred = modelling( 0.1 , features_mask , threshold_floor , 15 , [ 5 , 100 , nobs_floor , threshold_floor ] , "logit" , False )
 
 #%% Interpretation
 
