@@ -10,10 +10,10 @@ import plotly.graph_objects as go
 import sklearn as skl
 from sklearn.preprocessing import LabelEncoder, label_binarize
 
-from src.config import show_fig
+from src.utilities.config import show_fig
 
 MODELS_DIR = Path("models")
-from src.feature_engineering import feature_engineering
+from  src.utilities.feature_engineering import feature_engineering
 
 
 def logit(attypes, x_train, x_test, y_train, y_test):
@@ -43,7 +43,10 @@ def logit(attypes, x_train, x_test, y_train, y_test):
 
 
 def randomforrest(attypes, x_train, x_test, y_train, y_test):
-    """Train a Random Forest classifier.
+    """Train a Random Forest classifier with hyperparameter tuning.
+
+    Uses RandomizedSearchCV with 3-fold stratified cross-validation to find
+    good hyperparameters, then refits on the full training set.
 
     Parameters
     ----------
@@ -61,13 +64,38 @@ def randomforrest(attypes, x_train, x_test, y_train, y_test):
     Returns
     -------
     model : sklearn.ensemble.RandomForestClassifier
-        Fitted Random Forest model.
+        Fitted Random Forest model with tuned hyperparameters.
     """
-    model = skl.ensemble.RandomForestClassifier(
-        n_estimators=100, max_depth=None, random_state=1, n_jobs=-1
+    from sklearn.model_selection import RandomizedSearchCV
+
+    param_distributions = {
+        "n_estimators": [100, 200, 300, 500],
+        "max_depth": [10, 20, 30, 50, None],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf": [1, 2, 4],
+        "max_features": ["sqrt", "log2", 0.1, 0.2],
+    }
+
+    base_model = skl.ensemble.RandomForestClassifier(
+        random_state=1, n_jobs=-1,
     )
-    model.fit(x_train, y_train)
-    return model
+
+    search = RandomizedSearchCV(
+        base_model,
+        param_distributions,
+        n_iter=30,
+        cv=3,
+        scoring="f1_macro",
+        random_state=1,
+        n_jobs=-1,
+        verbose=1,
+    )
+    search.fit(x_train, y_train)
+
+    print(f"Best RF params: {search.best_params_}")
+    print(f"Best CV F1 (macro): {search.best_score_:.4f}")
+
+    return search.best_estimator_
 
 
 def model_predictions(model, x_test):
