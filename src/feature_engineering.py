@@ -89,34 +89,36 @@ def contvar_classes_builder_bycount_bynobs(df, col, n_obs):
         Name of the newly created class column.
     """
     colclass_name = f"{col} classes"
-    target_col = df[[col]].sort_values(by=col)[col]
+    sorted_df = df[[col]].sort_values(by=col)
+    sorted_vals = sorted_df[col]
 
-    current_indices = []
-    current_values = []
-    val_prev = None
+    # Detect where the value changes from the previous row
+    value_changed = sorted_vals != sorted_vals.shift(1)
+    # Assign a unique ID to each group of consecutive equal values
+    value_group_ids = value_changed.cumsum()
 
-    for idx, val in target_col.items():
-        if (
-            val_prev is not None
-            and val != val_prev
-            and len(current_indices) >= n_obs
-        ):
-            class_min = min(current_values)
-            class_max = max(current_values)
-            class_label = f"class : {class_min} - {class_max}"
-            df.loc[current_indices, colclass_name] = class_label
-            current_indices = []
-            current_values = []
+    # Assign bin IDs: split into a new bin when accumulated rows >= n_obs
+    unique_groups = value_group_ids.unique()
+    group_sizes_series = sorted_vals.groupby(value_group_ids).size()
 
-        current_indices.append(idx)
-        current_values.append(val)
-        val_prev = val
+    bin_id = 0
+    accumulated = 0
+    group_to_bin = {}
+    for g in unique_groups:
+        if accumulated >= n_obs and accumulated > 0:
+            bin_id += 1
+            accumulated = 0
+        accumulated += group_sizes_series[g]
+        group_to_bin[g] = bin_id
 
-    if current_indices:
-        class_min = min(current_values)
-        class_max = max(current_values)
-        class_label = f"class : {class_min} - {class_max}"
-        df.loc[current_indices, colclass_name] = class_label
+    bin_assignments = value_group_ids.map(group_to_bin)
+
+    # Compute class labels per bin using vectorized groupby
+    bin_min = sorted_vals.groupby(bin_assignments).transform("min")
+    bin_max = sorted_vals.groupby(bin_assignments).transform("max")
+    labels = "class : " + bin_min.astype(str) + " - " + bin_max.astype(str)
+
+    df.loc[sorted_df.index, colclass_name] = labels.values
 
     return colclass_name
 
@@ -165,8 +167,9 @@ def crosstab_col(df, cols, crosstabs_x_AttackType):
         crosstab_name = "{ " + " , ".join(cols) + " }"
 
     attypes = df["Attack Type"].unique()
+    index = df[cols[0]] if len(cols) == 1 else [df[col] for col in cols]
     crosstabs_x_AttackType[crosstab_name] = pd.crosstab(
-        index=[df[col] for col in cols],
+        index=index,
         columns=df["Attack Type"],
         margins=True,
         margins_name="n obs",
@@ -216,12 +219,12 @@ def df_bias_classes(df, crosstab_name, threshold, colclass_names, dynamic_thresh
 
     for attype in attypes:
         target_crosstab = crosstabs_x_AttackType[crosstab_name]
-        target_crosstab = target_crosstab[
-            target_crosstab.apply(
-                lambda row: dynamic_threshold(row, attype, dynamic_threshold_pars),
-                axis=1,
-            )
-        ]
+        n1, d1, n2, d2 = dynamic_threshold_pars
+        a = (d2 - d1) / (n2 - n1)
+        b = d1 - a * n1
+        dyn_thresh = a * target_crosstab["n obs"] + b
+        mask = target_crosstab[attype] >= dyn_thresh
+        target_crosstab = target_crosstab[mask]
         bias_col_name = f"{crosstab_name} , bias {attype}"
         X_col.append(bias_col_name)
         df[bias_col_name] = 0
@@ -319,9 +322,9 @@ def build_daily_aggregates(df, target_cols):
             target_col_values = df[target_col].value_counts().index
 
             max_n_d_col = f"{target_col} max n {timedim}"
-            df_n[df_n_name][max_n_d_col] = df_n[df_n_name][
-                [value for value in target_col_values]
-            ].apply(lambda x: coln_max(x, timedim), axis=1)
+            value_cols = [value for value in target_col_values]
+            max_col_names = df_n[df_n_name][value_cols].idxmax(axis=1)
+            df_n[df_n_name][max_n_d_col] = "{ " + max_col_names.astype(str) + " }"
 
             for lags in [0, 1]:
                 if lags == 0:
@@ -331,10 +334,10 @@ def build_daily_aggregates(df, target_cols):
                     )
                     for tarcol in df[target_col].value_counts().index:
                         df[f"{tarcol} n d exp"] = df["date dd"].map(
-                            df_n[df_n_name][tarcol].apply(math.exp)
+                            np.exp(df_n[df_n_name][tarcol])
                         )
                         df[f"{tarcol} n d ln"] = df["date dd"].map(
-                            df_n[df_n_name][tarcol].apply(ln)
+                            np.log(df_n[df_n_name][tarcol].replace(0, 1))
                         )
                 else:
                     max_n_dlags_col = f"{max_n_d_col}-{lags}"

@@ -98,26 +98,18 @@ def run_eda(df):
     )
     show_fig(fig)
 
-    col_pos = df.columns.get_loc(col_name)
-    col_insert = [
-        "date dd", "date MW", "date MW1", "date MW2", "date MW3",
-        "date WD", "date WD1", "date WD2", "date WD3", "date WD4",
-        "date WD5", "date WD6", "date H", "date H1", "date H2",
-        "date H3", "date M", "date M1", "date M2", "date M3",
-        "date M4", "date M5", "date M6", "date M7", "date M8",
-        "date M9", "date M10", "date M11",
-    ]
-    na_cols = {"date dd", "date MW", "date WD", "date H", "date M"}
-    new_cols = pd.DataFrame(
-        {c: pd.NA if c in na_cols else 0 for c in col_insert},
-        index=df.index,
-    )
-    df = pd.concat(
-        [df.iloc[:, :col_pos + 1], new_cols, df.iloc[:, col_pos + 1:]],
-        axis=1,
-    )
-
     df["date dd"] = df["date"].dt.floor("D")
+
+    # Initialize indicator columns to 0
+    for i in range(1, 4):
+        df[f"date MW{i}"] = 0
+    for i in range(1, 7):
+        df[f"date WD{i}"] = 0
+    for i in range(1, 4):
+        df[f"date H{i}"] = 0
+    for i in range(1, 12):
+        df[f"date M{i}"] = 0
+
     sched = [0, 7, 14, 22]
     for day_filter in range(0, len(sched) - 1):
         day_bully = (df["date"].dt.day > sched[day_filter]) & (
@@ -153,24 +145,6 @@ def run_eda(df):
     # IP address geolocation
     # =========================================================================
     for destsource in ["Source", "Destination"]:
-        col_pos = df.columns.get_loc(f"{destsource} IP Address")
-        col_insert = [
-            f"{destsource} IP 3octet",
-            f"{destsource} IP 2octet",
-            f"{destsource} IP 1octet",
-            f"{destsource} IP latitude",
-            f"{destsource} IP longitude",
-            f"{destsource} IP country",
-            f"{destsource} IP city",
-        ]
-        new_cols = pd.DataFrame(
-            {c: pd.NA for c in col_insert},
-            index=df.index,
-        )
-        df = pd.concat(
-            [df.iloc[:, :col_pos + 1], new_cols, df.iloc[:, col_pos + 1:]],
-            axis=1,
-        )
         # print(f"  Geolocating {destsource} IPs using {MAX_WORKERS} threads...")
         geo_result = ip_to_coords_parallel(df[f"{destsource} IP Address"])
         df[f"{destsource} IP latitude"] = geo_result["latitude"]
@@ -235,21 +209,7 @@ def run_eda(df):
     # Proxy Information
     # =========================================================================
     col_name = "Proxy Information"
-    col_pos = df.columns.get_loc(col_name)
-    new_cols = pd.DataFrame(
-        {
-            "Proxy usage": 0,
-            "Proxy latitude": pd.NA,
-            "Proxy longitude": pd.NA,
-            "Proxy country": pd.NA,
-            "Proxy city": pd.NA,
-        },
-        index=df.index,
-    )
-    df = pd.concat(
-        [df.iloc[:, :col_pos + 1], new_cols, df.iloc[:, col_pos + 1:]],
-        axis=1,
-    )
+    df["Proxy usage"] = 0
     df.loc[~df["Proxy Information"].isna(), "Proxy usage"] = 1
     # print(f"  Geolocating Proxy IPs using {MAX_WORKERS} threads...")
     geo_result = ip_to_coords_parallel(df["Proxy Information"])
@@ -376,14 +336,6 @@ def run_eda(df):
         "OS family", "OS major", "OS minor", "OS patch",
         "Device family", "Device brand", "Device type", "Device bot",
     ]
-    new_cols = pd.DataFrame(
-        {c: pd.NA for c in col_insert},
-        index=df.index,
-    )
-    df = pd.concat(
-        [df.iloc[:, :col_pos + 1], new_cols, df.iloc[:, col_pos + 1:]],
-        axis=1,
-    )
     # print(f"  Parsing User-Agent strings using {MAX_WORKERS} threads...")
     ua_result = parse_device_info_parallel(df[col_name])
     for ua_col in ua_result.columns:
@@ -408,15 +360,6 @@ def run_eda(df):
     # Geo-location Data
     col_name = "Geo-location Data"
     # print(df[col_name].value_counts())
-    col_pos = df.columns.get_loc(col_name)
-    new_cols = pd.DataFrame(
-        {"Geo-location City": pd.NA, "Geo-location State": pd.NA},
-        index=df.index,
-    )
-    df = pd.concat(
-        [df.iloc[:, :col_pos + 1], new_cols, df.iloc[:, col_pos + 1:]],
-        axis=1,
-    )
     geo_loc = geolocation_data_parallel(df["Geo-location Data"])
     df["Geo-location City"] = geo_loc["city"]
     df["Geo-location State"] = geo_loc["state"]

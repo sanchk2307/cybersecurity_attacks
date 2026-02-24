@@ -46,20 +46,17 @@ def catvar_mapping(df, col_name, values, name=None):
     Returns
     -------
     pd.DataFrame
-        Copy of the dataframe with new binary columns added.
+        The same dataframe, modified in-place with new binary columns added.
     """
-    df1 = df.copy(deep=True)
     if name is None:
         name = values
     elif (len(name) == 1) and (name != ["/"]):
         col_target = f"{col_name} {name[0]}"
-        df1 = df1.rename(columns={col_name: col_target})
+        df.rename(columns={col_name: col_target}, inplace=True)
         col_name = col_target
         name = [col_target]
-    col_pos = df1.columns.get_loc(col_name) + 1
-    # Pre-compute all new column Series, then concat once
-    new_col_series = {}
-    targets_in_order = []
+    col_pos = df.columns.get_loc(col_name) + 1
+    insert_offset = 0
     for val, nm in zip(values, name):
         if nm == "/":
             col_target = col_name
@@ -67,28 +64,17 @@ def catvar_mapping(df, col_name, values, name=None):
             col_target = nm
         else:
             col_target = f"{col_name} {nm}"
-        bully = df1[col_name] == val
-        col_data = pd.Series(0, index=df1.index, dtype="int64")
-        col_data.loc[bully] = 1
+        col_data = (df[col_name] == val).astype("int64")
         if nm == "/" or len(name) == 1:
             # Overwrite existing column
-            df1[col_target] = col_data
+            df[col_target] = col_data
         else:
-            if col_target not in df1.columns:
-                new_col_series[col_target] = col_data
-                targets_in_order.append(col_target)
+            if col_target not in df.columns:
+                df.insert(col_pos + insert_offset, col_target, col_data)
+                insert_offset += 1
             else:
-                df1[col_target] = col_data
-    if new_col_series:
-        new_cols = pd.DataFrame(
-            {c: new_col_series[c] for c in targets_in_order},
-            index=df1.index,
-        )
-        df1 = pd.concat(
-            [df1.iloc[:, :col_pos], new_cols, df1.iloc[:, col_pos:]],
-            axis=1,
-        )
-    return df1
+                df[col_target] = col_data
+    return df
 
 
 def piechart_col(df, col, names=None):
@@ -110,8 +96,11 @@ def piechart_col(df, col, names=None):
             title=f"Distribution of {col}",
         )
     else:
+        vc = df[col].value_counts()
+        if len(vc) != len(names):
+            names = vc.index
         fig = px.pie(
-            values=df[col].value_counts(),
+            values=vc,
             names=names,
             title=f"Distribution of {col}",
         )
