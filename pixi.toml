@@ -8,10 +8,23 @@ version = "0.1.0"
 # This command runs the entire pipeline
 run-pipeline = "python pipeline.py"
 
+# This command runs the Streamlit app
+run-app = "python -m streamlit run app.py"
+
 #This command runs the generator for the ascii representation of the directory tree excluding directories and files preceded by '.'
 gen-dir-repr = "pwsh -Command './generate_ascii_dir_repr.ps1 ./ -Exclude .*, __pycache__ -Depth 3'"
 
 [dependencies]
+python = "3.12.*"
+streamlit = ">=1.54.0,<2"
+scikit-learn = ">=1.8.0,<2"
+numpy = ">=1.21.6,<2.0a0"
+matplotlib = ">=3.10.8,<4"
+seaborn = ">=0.13.2,<0.14"
+user-agents = ">=2.2.0,<3"
+folium = ">=0.19.0,<0.20"
+streamlit-folium = ">=0.25.0,<0.26"
+ipykernel = ">=7.2.0,<8"
 django = ">=6.0,<7"
 pandas = ">=3.0.1,<4"
 requests = ">=2.32.5,<3"
