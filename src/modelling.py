@@ -1,5 +1,8 @@
 """Machine learning modelling: training, prediction, and evaluation."""
 
+import pickle
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -8,6 +11,8 @@ import sklearn as skl
 from sklearn.preprocessing import LabelEncoder, label_binarize
 
 from src.config import show_fig
+
+MODELS_DIR = Path("models")
 from src.feature_engineering import feature_engineering
 
 
@@ -162,7 +167,33 @@ def model_metrics(attypes, model, x_train, x_test, y_train, y_test, y_pred, y_pr
         legend_title="Classes",
         template="plotly_dark",
     )
-    fig_roc.show()
+    show_fig(fig_roc)
+
+    # Precision-Recall curves
+    fig_pr = go.Figure()
+    for yclass in range(n_classes):
+        precision, recall, _ = skl.metrics.precision_recall_curve(
+            y_test_bin[:, yclass], y_prob[:, yclass]
+        )
+        ap = skl.metrics.average_precision_score(
+            y_test_bin[:, yclass], y_prob[:, yclass]
+        )
+        fig_pr.add_trace(
+            go.Scatter(
+                x=recall,
+                y=precision,
+                mode="lines",
+                name=f"{attypes[yclass]} ( AP = {ap:.3f})",
+            )
+        )
+    fig_pr.update_layout(
+        title="Multiclass Precision-Recall Curve",
+        xaxis_title="Recall",
+        yaxis_title="Precision",
+        legend_title="Classes",
+        template="plotly_dark",
+    )
+    show_fig(fig_pr)
 
     # Mutual information
     marginfo_scores = skl.feature_selection.mutual_info_classif(
@@ -297,5 +328,12 @@ def modelling(
     model_metrics(
         attypes, model, x_train, x_test, y_train, y_test, y_pred, y_prob
     )
+
+    # Save trained model
+    MODELS_DIR.mkdir(exist_ok=True)
+    model_path = MODELS_DIR / f"{model_type}_model.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump(model, f)
+    print(f"Model saved to {model_path}")
 
     return y_pred, df

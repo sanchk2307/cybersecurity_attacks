@@ -42,8 +42,8 @@ class EDA():
             self.data_dir + 'admin1CodesASCII.txt'
         ]
         
-        # Add file names and file urls to the dict below to download and check for after download 
-        files_to_download = {
+        # Add file names and file urls to the dict below to download and check for after download
+        self.files_to_download = {
             'alternateNamesV2.zip': 'https://download.geonames.org/export/dump/alternateNamesV2.zip',
             'IN.zip': 'https://download.geonames.org/export/dump/IN.zip',
             'admin1CodesASCII.txt': 'https://download.geonames.org/export/dump/admin1CodesASCII.txt',
@@ -94,7 +94,7 @@ class EDA():
             - Prints status message if all files are already present
         """
         if not all(Path(f).exists() for f in required_files):
-            GetFiles(required_files, Path(self.data_dir))
+            GetFiles(self.files_to_download, Path(self.data_dir))
         else:
             print("All files already present, skipping download.")
         

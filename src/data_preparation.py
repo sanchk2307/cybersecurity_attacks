@@ -1,13 +1,14 @@
 """Data preparation utilities: IP geolocation, device parsing, IPv4 prefix extraction.
 
-Heavy parsing functions are parallelized using ThreadPoolExecutor with
-(max logical cores - 2) workers. Results are cached to disk so subsequent
-runs skip already-resolved lookups.
+Heavy I/O-bound functions (IP geolocation) are parallelized using
+ThreadPoolExecutor. CPU-bound functions (UA string parsing) use
+ProcessPoolExecutor for true parallelism past the GIL.
+Results are cached to disk so subsequent runs skip already-resolved lookups.
 """
 
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -113,9 +114,9 @@ def ip_to_coords_parallel(series):
 
     results = [None] * len(series)
     index = series.index
-    to_lookup = []  # (position, ip) pairs that need a live lookup
+    to_lookup = {}  # ip_str -> list of positions (deduplicated)
 
-    # Resolve from cache first
+    # Resolve from cache first, dedup uncached IPs
     cache_hits = 0
     for pos, ip in enumerate(series.values):
         ip_str = str(ip)
@@ -124,28 +125,33 @@ def ip_to_coords_parallel(series):
             results[pos] = tuple(_from_cache_val(v) for v in cached)
             cache_hits += 1
         else:
-            to_lookup.append((pos, ip_str))
+            if ip_str not in to_lookup:
+                to_lookup[ip_str] = []
+            to_lookup[ip_str].append(pos)
 
     total = len(series)
-    # print(f"  IP geolocation: {cache_hits}/{total} from cache, {len(to_lookup)} to resolve")
+    unique_to_lookup = len(to_lookup)
+    # print(f"  IP geolocation: {cache_hits}/{total} from cache, {unique_to_lookup} unique IPs to resolve")
 
     if to_lookup:
         new_cache_entries = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_to_pos = {
-                executor.submit(ip_to_coords, ip): (pos, ip) for pos, ip in to_lookup
+            future_to_ip = {
+                executor.submit(ip_to_coords, ip): ip for ip in to_lookup
             }
             done_count = 0
-            for future in as_completed(future_to_pos):
-                pos, ip = future_to_pos[future]
+            for future in as_completed(future_to_ip):
+                ip = future_to_ip[future]
                 result = future.result()
-                results[pos] = result
+                # Assign result to all positions with this IP
+                for pos in to_lookup[ip]:
+                    results[pos] = result
                 new_cache_entries[ip] = tuple(_to_cache_val(v) for v in result)
                 done_count += 1
                 # if done_count % 5000 == 0:
-                # print(f"  IP geolocation: {done_count}/{len(to_lookup)} resolved")
+                # print(f"  IP geolocation: {done_count}/{unique_to_lookup} resolved")
 
-        # print(f"  IP geolocation: {len(to_lookup)}/{len(to_lookup)} resolved")
+        # print(f"  IP geolocation: {unique_to_lookup}/{unique_to_lookup} resolved")
 
         # Update and save cache
         cache.update(new_cache_entries)
@@ -180,7 +186,7 @@ def geolocation_data(info):
 
 
 def geolocation_data_parallel(series):
-    """Apply geolocation_data to a Series in parallel using threads.
+    """Split "City, State" strings into separate columns using vectorized ops.
 
     Parameters
     ----------
@@ -192,22 +198,9 @@ def geolocation_data_parallel(series):
     pd.DataFrame
         DataFrame with columns [city, state].
     """
-    results = [None] * len(series)
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_pos = {
-            executor.submit(geolocation_data, val): pos
-            for pos, val in enumerate(series.values)
-        }
-        for future in as_completed(future_to_pos):
-            pos = future_to_pos[future]
-            results[pos] = future.result()
-
-    return pd.DataFrame(
-        results,
-        index=series.index,
-        columns=["city", "state"],
-    )
+    split = series.str.split(", ", n=1, expand=True)
+    split.columns = ["city", "state"]
+    return split
 
 
 # ─── IPv4 prefix extraction ──────────────────────────────────────────────────
@@ -241,6 +234,11 @@ def extract_ipv4_prefix(df, SourDest, n_octets):
 def _parse_ua_string(ua_string):
     """Parse a single User-Agent string and extract all device fields at once.
 
+    This function is a top-level function so it can be pickled for use with
+    ProcessPoolExecutor.  It returns None instead of pd.NA because pd.NA
+    cannot be pickled across process boundaries.  Callers must convert None
+    back to pd.NA after collecting results.
+
     Parameters
     ----------
     ua_string : str
@@ -252,25 +250,26 @@ def _parse_ua_string(ua_string):
         (browser_family, browser_major, browser_minor,
          os_family, os_major, os_minor, os_patch,
          device_family, device_brand, device_type, device_bot)
+        Missing values are represented as None (not pd.NA).
     """
     try:
-        if not ua_string or pd.isna(ua_string):
-            return (pd.NA,) * 11
+        if not ua_string or ua_string != ua_string:  # NaN != NaN
+            return (None,) * 11
         ua = ua_parse(ua_string)
 
-        browser_family = ua.browser.family if ua.browser.family is not None else pd.NA
+        browser_family = ua.browser.family if ua.browser.family is not None else None
         bv = ua.browser.version
-        browser_major = bv[0] if len(bv) > 0 and bv[0] is not None else pd.NA
-        browser_minor = bv[1] if len(bv) > 1 and bv[1] is not None else pd.NA
+        browser_major = bv[0] if len(bv) > 0 and bv[0] is not None else None
+        browser_minor = bv[1] if len(bv) > 1 and bv[1] is not None else None
 
-        os_family = ua.os.family if ua.os.family is not None else pd.NA
+        os_family = ua.os.family if ua.os.family is not None else None
         ov = ua.os.version
-        os_major = ov[0] if len(ov) > 0 and ov[0] is not None else pd.NA
-        os_minor = ov[1] if len(ov) > 1 and ov[1] is not None else pd.NA
-        os_patch = ov[2] if len(ov) > 2 and ov[2] is not None else pd.NA
+        os_major = ov[0] if len(ov) > 0 and ov[0] is not None else None
+        os_minor = ov[1] if len(ov) > 1 and ov[1] is not None else None
+        os_patch = ov[2] if len(ov) > 2 and ov[2] is not None else None
 
-        device_family = ua.device.family if ua.device.family is not None else pd.NA
-        device_brand = ua.device.brand if ua.device.brand is not None else pd.NA
+        device_family = ua.device.family if ua.device.family is not None else None
+        device_brand = ua.device.brand if ua.device.brand is not None else None
 
         if getattr(ua, "is_mobile", False):
             device_type = "Mobile"
@@ -279,7 +278,7 @@ def _parse_ua_string(ua_string):
         elif getattr(ua, "is_pc", False):
             device_type = "PC"
         else:
-            device_type = pd.NA
+            device_type = None
 
         device_bot = ua.is_bot
 
@@ -297,7 +296,12 @@ def _parse_ua_string(ua_string):
             device_bot,
         )
     except Exception:
-        return (pd.NA,) * 11
+        return (None,) * 11
+
+
+def _none_to_na(t):
+    """Convert None values in a tuple back to pd.NA."""
+    return tuple(pd.NA if v is None else v for v in t)
 
 
 _UA_COLUMNS = [
@@ -355,14 +359,17 @@ def parse_device_info_parallel(series):
 
     if to_parse:
         new_cache_entries = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        ua_strings = list(to_parse.keys())
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_key = {
-                executor.submit(_parse_ua_string, ua_str): ua_str for ua_str in to_parse
+                executor.submit(_parse_ua_string, ua_str): ua_str
+                for ua_str in ua_strings
             }
             done_count = 0
             for future in as_completed(future_to_key):
                 ua_str = future_to_key[future]
-                result = future.result()
+                raw_result = future.result()  # contains None, not pd.NA
+                result = _none_to_na(raw_result)
                 # Assign result to all positions with this UA string
                 for pos in to_parse[ua_str]:
                     results[pos] = result
