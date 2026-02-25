@@ -12,3 +12,6 @@ data/*
 # .env (unused for now)
 
 .env
+
+#  Claude directory
+.claude/
