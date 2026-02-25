@@ -190,7 +190,6 @@ sophisticated and should be documented accurately.
 
 - [Pixi](https://pixi.sh/) package manager
 - MaxMind GeoLite2 databases (included in `geolite2_db/`)
-- **100+ GB of RAM** — the full pipeline (EDA + feature engineering + model training) requires significant memory due to cross-tabulation expansion and in-memory parallel processing
 
 ### Installation
 
