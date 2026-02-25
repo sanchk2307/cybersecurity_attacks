@@ -227,7 +227,7 @@ def df_bias_classes(df, crosstab_name, threshold, colclass_names, dynamic_thresh
         target_crosstab = target_crosstab[mask]
         bias_col_name = f"{crosstab_name} , bias {attype}"
         X_col.append(bias_col_name)
-        df[bias_col_name] = 0
+        df[bias_col_name] = np.int8(0)
 
         for p_class, threshold_class in enumerate(
             {threshold, 40, 50, 60, 75, 90}
@@ -239,11 +239,11 @@ def df_bias_classes(df, crosstab_name, threshold, colclass_names, dynamic_thresh
             if not isinstance(bias, pd.MultiIndex):
                 df.loc[
                     df[df[colclass_names].isin(bias)].index, bias_col_name
-                ] = p_class
+                ] = np.int8(p_class)
             else:
                 midx = list(zip(*(df[col] for col in colclass_names)))
                 midx = pd.Series(midx).isin(bias)
-                df.loc[midx, bias_col_name] = p_class
+                df.loc[midx, bias_col_name] = np.int8(p_class)
     return X_col
 
 
@@ -288,8 +288,11 @@ def ln(row):
 def build_daily_aggregates(df, target_cols):
     """Build daily aggregate features for the given target columns.
 
-    For each target column, computes daily counts, max-category indicators,
-    exponential and log transforms, and binary mappings.
+    For each target column, computes daily counts, identifies the most
+    frequent category per day, and maps a single ``max n d`` column onto
+    *df*.  The intermediate pivot tables are discarded immediately after
+    the max is extracted to keep memory low (Source Port alone creates a
+    pivot with ~30 000 columns).
 
     Parameters
     ----------
@@ -297,61 +300,25 @@ def build_daily_aggregates(df, target_cols):
         Main DataFrame (mutated in place).
     target_cols : list of str
         Column names to aggregate by day.
-
-    Returns
-    -------
-    dict
-        Dictionary of daily pivot DataFrames keyed by "col, d".
     """
-    from src.utilities.utils import catvar_mapping
-
-    df_n = {}
     for target_col in target_cols:
-        # print(f"\nWorking on {target_col}")
-        for timedim in ["d"]:
-            df_n_name = f"{target_col} , {timedim}"
-            df_n[df_n_name] = df.loc[:, ["date", "date dd", target_col]]
-            df_n[df_n_name] = (
-                df_n[df_n_name]
-                .groupby(["date dd", target_col])
-                .size()
-                .unstack()
-                .fillna(0)
-            )
+        pivot = (
+            df[["date dd", target_col]]
+            .groupby(["date dd", target_col])
+            .size()
+            .unstack()
+            .fillna(0)
+        )
 
-            target_col_values = df[target_col].value_counts().index
+        value_cols = list(df[target_col].value_counts().index)
+        max_col_names = pivot[value_cols].idxmax(axis=1)
+        max_series = "{ " + max_col_names.astype(str) + " }"
 
-            max_n_d_col = f"{target_col} max n {timedim}"
-            value_cols = [value for value in target_col_values]
-            max_col_names = df_n[df_n_name][value_cols].idxmax(axis=1)
-            df_n[df_n_name][max_n_d_col] = "{ " + max_col_names.astype(str) + " }"
+        max_n_d_col = f"{target_col} max n d"
+        df[max_n_d_col] = df["date dd"].map(max_series)
 
-            for lags in [0, 1]:
-                if lags == 0:
-                    max_n_dlags_col = max_n_d_col
-                    df[max_n_dlags_col] = df["date dd"].map(
-                        df_n[df_n_name][max_n_d_col]
-                    )
-                    for tarcol in df[target_col].value_counts().index:
-                        df[f"{tarcol} n d exp"] = df["date dd"].map(
-                            np.exp(df_n[df_n_name][tarcol])
-                        )
-                        df[f"{tarcol} n d ln"] = df["date dd"].map(
-                            np.log(df_n[df_n_name][tarcol].replace(0, 1))
-                        )
-                else:
-                    max_n_dlags_col = f"{max_n_d_col}-{lags}"
-                    df[max_n_dlags_col] = (
-                        df["date dd"] - pd.Timedelta(days=lags)
-                    ).map(df_n[df_n_name][max_n_d_col])
-
-                df = catvar_mapping(
-                    df,
-                    max_n_dlags_col,
-                    df[max_n_dlags_col].value_counts().index[:-1],
-                )
-
-    return df_n
+        # Discard pivot immediately — only the max-category mapping is needed
+        del pivot, max_col_names, max_series
 
 
 def feature_engineering(

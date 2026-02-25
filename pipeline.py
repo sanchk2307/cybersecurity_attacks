@@ -13,6 +13,7 @@ Usage:
 """
 
 import copy
+import gc
 import pickle
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -184,7 +185,7 @@ def _run_pipeline(show_figures, model_only, sequential, profile, mon):
 
         # EDA pipeline (sequential — mutates df)
         mon.stage = "EDA"
-        df, crosstabs_x_AttackType, df_n = run_eda(df)
+        df, crosstabs_x_AttackType = run_eda(df)
 
         # --- Stage 1: visualizations, diagrams, statistics --------------------
         workers = [
@@ -217,6 +218,15 @@ def _run_pipeline(show_figures, model_only, sequential, profile, mon):
                         print(f"  [{name}] {result}")
                     except Exception as exc:
                         print(f"  [{name}] failed: {exc}")
+
+        # Drop EDA-only "max n d" columns created by build_daily_aggregates()
+        # for the Paracat diagram.  Not needed for modelling.
+        mon.stage = "trim columns"
+        agg_cols = [c for c in df.columns if " max n d" in c]
+        if agg_cols:
+            print(f"Dropping {len(agg_cols)} daily-aggregate columns to save memory...")
+            df.drop(columns=agg_cols, inplace=True)
+            gc.collect()
 
         # Save pre-model checkpoint
         mon.stage = "saving cache"
@@ -254,6 +264,7 @@ def _run_pipeline(show_figures, model_only, sequential, profile, mon):
         contvar_nobs_b_class=15,
         dynamic_threshold_pars=[5, 100, nobs_floor, threshold_floor],
         split_before_training=False,
+        n_jobs=profile.max_workers,
     )
 
     # --- Logistic Regression ---
@@ -264,6 +275,7 @@ def _run_pipeline(show_figures, model_only, sequential, profile, mon):
         model_type="logit",
         **modelling_kwargs,
     )
+    gc.collect()
 
     # --- Random Forest ---
     # modelling() clears crosstabs internally, so pass a fresh copy
@@ -274,6 +286,7 @@ def _run_pipeline(show_figures, model_only, sequential, profile, mon):
         model_type="randomforrest",
         **modelling_kwargs,
     )
+    gc.collect()
 
     if model_only:
         config.SHOW_FIGURES = False

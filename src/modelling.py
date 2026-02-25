@@ -1,5 +1,6 @@
 """Machine learning modelling: training, prediction, and evaluation."""
 
+import gc
 import pickle
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def logit(attypes, x_train, x_test, y_train, y_test):
     return model
 
 
-def randomforrest(attypes, x_train, x_test, y_train, y_test):
+def randomforrest(attypes, x_train, x_test, y_train, y_test, n_jobs=-1):
     """Train a Random Forest classifier with hyperparameter tuning.
 
     Uses RandomizedSearchCV with 3-fold stratified cross-validation to find
@@ -60,6 +61,8 @@ def randomforrest(attypes, x_train, x_test, y_train, y_test):
         Training target labels.
     y_test : array-like
         Test target labels (not used inside this function).
+    n_jobs : int
+        Number of parallel jobs for CV and forest fitting (-1 = all CPUs).
 
     Returns
     -------
@@ -77,7 +80,7 @@ def randomforrest(attypes, x_train, x_test, y_train, y_test):
     }
 
     base_model = skl.ensemble.RandomForestClassifier(
-        random_state=1, n_jobs=-1,
+        random_state=1, n_jobs=n_jobs,
     )
 
     search = RandomizedSearchCV(
@@ -87,7 +90,7 @@ def randomforrest(attypes, x_train, x_test, y_train, y_test):
         cv=3,
         scoring="f1_macro",
         random_state=1,
-        n_jobs=-1,
+        n_jobs=n_jobs,
         verbose=1,
     )
     search.fit(x_train, y_train)
@@ -260,6 +263,7 @@ def modelling(
     dynamic_threshold_pars,
     model_type="logit",
     split_before_training=False,
+    n_jobs=-1,
 ):
     """End-to-end modelling pipeline.
 
@@ -306,10 +310,11 @@ def modelling(
             contvar_nobs_b_class,
             dynamic_threshold_pars,
         )
-        df = df.copy()
-
-        x_vars = df[X_cols]
-        y_var = df["Attack Type"]
+        # Extract only the columns needed for modelling, then free the crosstabs
+        x_vars = df[X_cols].copy()
+        y_var = df["Attack Type"].copy()
+        crosstabs_x_AttackType.clear()
+        gc.collect()
 
         y = LabelEncoder()
         y_var = y.fit_transform(y_var)
@@ -317,6 +322,8 @@ def modelling(
         x_train, x_test, y_train, y_test = skl.model_selection.train_test_split(
             x_vars, y_var, test_size=testp, random_state=50, stratify=y_var
         )
+        del x_vars, y_var
+        gc.collect()
     else:
         df_train, df_test = skl.model_selection.train_test_split(
             df,
@@ -347,7 +354,7 @@ def modelling(
     if model_type == "logit":
         model = logit(attypes, x_train, x_test, y_train, y_test)
     elif model_type == "randomforrest":
-        model = randomforrest(attypes, x_train, x_test, y_train, y_test)
+        model = randomforrest(attypes, x_train, x_test, y_train, y_test, n_jobs=n_jobs)
     else:
         print("model type is not recognized")
         return None, df

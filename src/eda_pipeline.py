@@ -1,5 +1,6 @@
 """EDA pipeline: orchestrates all data transformation and exploration steps."""
 
+import gc
 import warnings
 
 import pandas as pd
@@ -218,8 +219,10 @@ def run_eda(df):
     df["Proxy country"] = geo_result["country"]
     df["Proxy city"] = geo_result["city"]
 
-    # Defragment after IP/Proxy column additions
+    # Defragment after IP/Proxy column additions and free geo results
     df = df.copy()
+    del geo_result
+    gc.collect()
 
     # print("Traffic flow analysis", "-" * 60)
     sankey_diag_IPs(df, 10)
@@ -342,7 +345,9 @@ def run_eda(df):
         df[ua_col] = ua_result[ua_col]
 
     # Defragment after Device Information column additions
+    del ua_result
     df = df.copy()
+    gc.collect()
 
     col_name = "Browser family"
     # print(df[col_name].value_counts())
@@ -387,9 +392,11 @@ def run_eda(df):
         "Alert Trigger", "Firewall Logs", "Attack Signature patA",
         "Action Taken", "Browser family",
     ]
-    df_n = build_daily_aggregates(df, target_cols)
+    build_daily_aggregates(df, target_cols)
+    gc.collect()
 
     # Defragment after all column insertions and catvar_mapping copies
     df = df.copy()
+    gc.collect()
 
-    return df, crosstabs_x_AttackType, df_n
+    return df, crosstabs_x_AttackType
