@@ -6,17 +6,17 @@ import pandas as pd
 import plotly.express as px
 from plotly.subplots import make_subplots as subp
 
-from src.config import show_fig
-from src.data_preparation import (
+from src.utilities.config import show_fig
+from src.utilities.data_preparation import (
     extract_ipv4_prefix,
     geolocation_data_parallel,
     ip_to_coords_parallel,
     parse_device_info_parallel,
     MAX_WORKERS,
 )
-from src.diagrams import sankey_diag_IPs
-from src.feature_engineering import build_daily_aggregates, crosstab_col
-from src.utils import catvar_mapping, piechart_col
+from src.utilities.diagrams import sankey_diag_IPs
+from src.utilities.feature_engineering import build_daily_aggregates, crosstab_col
+from src.utilities.utils import catvar_mapping, piechart_col
 
 
 def run_eda(df):
@@ -168,7 +168,7 @@ def run_eda(df):
             lat=df["Source IP latitude"],
             lon=df["Source IP longitude"],
             mode="markers",
-            marker={"size": 5, "color": "blue", "opacity": 0.6},
+            marker={"size": 5, "color": "#EF553B", "opacity": 0.6},
             name="Source IPs",
             hovertemplate="<b>Attack Origin</b><br>Lat: %{lat:.2f}<br>Lon: %{lon:.2f}<extra></extra>",
         ),
@@ -180,7 +180,7 @@ def run_eda(df):
             lat=df["Destination IP latitude"],
             lon=df["Destination IP longitude"],
             mode="markers",
-            marker={"size": 5, "color": "blue", "opacity": 0.6},
+            marker={"size": 5, "color": "#636EFA", "opacity": 0.6},
             name="Destination IPs",
             hovertemplate="<b>Attack Target</b><br>Lat: %{lat:.2f}<br>Lon: %{lon:.2f}<extra></extra>",
         ),
@@ -271,7 +271,7 @@ def run_eda(df):
     col_name = "Packet Type"
     # print(df[col_name].value_counts())
     df = catvar_mapping(df, col_name, ["Control"], ["Control"])
-    piechart_col(df, "Packet Type Control")
+    piechart_col(df, "Packet Type Control", {1: "Control", 0: "Data / Other"})
 
     # Traffic Type
     col_name = "Traffic Type"
@@ -283,7 +283,7 @@ def run_eda(df):
     col_name = "Malware Indicators"
     # print(df[col_name].value_counts())
     df = catvar_mapping(df, col_name, ["IoC Detected"], ["/"])
-    piechart_col(df, col_name)
+    piechart_col(df, col_name, {1: "IoC Detected", 0: "No IoC"})
 
     # Anomaly Scores
     fig = px.histogram(
@@ -303,13 +303,13 @@ def run_eda(df):
     # Alert Trigger
     col_name = "Alert Trigger"
     df = catvar_mapping(df, col_name, ["Alert Triggered"], ["/"])
-    piechart_col(df, col_name, names=["Alert triggered", "Alert not triggered"])
+    piechart_col(df, col_name, {1: "Alert Triggered", 0: "Alert Not Triggered"})
 
     # Attack Signature
     col_name = "Attack Signature"
     # print(df["Attack Signature"].value_counts())
     df = catvar_mapping(df, col_name, ["Known Pattern A"], ["patA"])
-    piechart_col(df, "Attack Signature patA", ["Pattern A", "Pattern B"])
+    piechart_col(df, "Attack Signature patA", {1: "Known Pattern A", 0: "Other Patterns"})
 
     # Action Taken
     col_name = "Action Taken"

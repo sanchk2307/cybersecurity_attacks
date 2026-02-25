@@ -3,9 +3,8 @@
 !.pixi/config.toml
 
 # Data and DB directories
-
-db/*
 data/*
+!data/.gitkeep
 
 # Cache directories
 **/*__pycache__*
