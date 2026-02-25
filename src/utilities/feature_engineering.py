@@ -303,7 +303,7 @@ def build_daily_aggregates(df, target_cols):
     dict
         Dictionary of daily pivot DataFrames keyed by "col, d".
     """
-    from src.utils import catvar_mapping
+    from src.utilities.utils import catvar_mapping
 
     df_n = {}
     for target_col in target_cols:

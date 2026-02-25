@@ -4,9 +4,12 @@ Orchestrates the full EDA pipeline by calling modular components from the src/ p
 Independent pipeline stages are executed in parallel using multiprocessing.
 
 Usage:
-    python script.py              # Full run with figures
-    python script.py --no-figures # Skip all figure rendering (faster)
-    python script.py --model-only # Show only model metrics figures
+    python script.py                      # Full run with figures
+    python script.py --no-figures         # Skip all figure rendering (faster)
+    python script.py --model-only         # Show only model metrics figures
+    python script.py --sequential         # Run all stages sequentially (lower RAM usage)
+    python script.py --monitor            # Show live memory usage TUI
+    python script.py --mem-limit 16       # Cap memory usage (8, 16, 32, 64 GB)
 """
 
 import copy
@@ -118,43 +121,105 @@ def main():
     """
     show_figures = "--no-figures" not in sys.argv and "--model-only" not in sys.argv
     model_only = "--model-only" in sys.argv
+    sequential = "--sequential" in sys.argv
+    monitor = "--monitor" in sys.argv
     config.SHOW_FIGURES = show_figures
 
+    # Parse --mem-limit N
+    from src.utilities.mem_monitor import (
+        VALID_MEM_LIMITS, MemoryMonitor, NullMonitor, mem_profile,
+    )
+    limit_gb = None
+    if "--mem-limit" in sys.argv:
+        idx = sys.argv.index("--mem-limit")
+        if idx + 1 >= len(sys.argv):
+            print(f"Error: --mem-limit requires a value: {VALID_MEM_LIMITS}")
+            sys.exit(1)
+        try:
+            limit_gb = int(sys.argv[idx + 1])
+        except ValueError:
+            print(f"Error: --mem-limit requires an integer: {VALID_MEM_LIMITS}")
+            sys.exit(1)
+        if limit_gb not in VALID_MEM_LIMITS:
+            print(f"Error: --mem-limit must be one of {VALID_MEM_LIMITS}, got {limit_gb}")
+            sys.exit(1)
+
+    # Build memory profile and apply concurrency settings
+    profile = mem_profile(limit_gb)
+    from src.utilities import data_preparation
+
+    if sequential or profile.sequential:
+        data_preparation.SEQUENTIAL_MODE = True
+    data_preparation.MAX_WORKERS = profile.max_workers
+
+    if limit_gb:
+        print(profile.describe())
+    elif sequential:
+        print("Running in sequential mode (reduced memory usage).")
+
+    # Optional memory monitor (context manager is a no-op when disabled)
+    mon = MemoryMonitor(limit_gb=limit_gb) if (monitor or limit_gb) else NullMonitor()
+
+    with mon:
+        _run_pipeline(show_figures, model_only, sequential or profile.sequential, profile, mon)
+
+
+def _run_pipeline(show_figures, model_only, sequential, profile, mon):
+    """Core pipeline logic, separated so the monitor can wrap it."""
     # Cache paths for pre-model checkpoint
     cache_dir = Path("data")
     cache_df = cache_dir / "pre_model_df.parquet"
     cache_ct = cache_dir / "pre_model_crosstabs.pkl"
 
     if cache_df.exists() and cache_ct.exists():
+        mon.stage = "loading cache"
         print("Loading cached pre-model data...")
         df = pd.read_parquet(cache_df)
         with open(cache_ct, "rb") as f:
             crosstabs_x_AttackType = pickle.load(f)
     else:
         # Data loading
+        mon.stage = "loading data"
         df_original, df = load_data()
 
         # EDA pipeline (sequential — mutates df)
+        mon.stage = "EDA"
         df, crosstabs_x_AttackType, df_n = run_eda(df)
 
-        # --- Parallel stage 1: visualizations, diagrams, statistics -----------
-        print("Running EDA visualizations & statistics in parallel...")
-        with ThreadPoolExecutor() as pool:
-            futures = {
-                pool.submit(_worker_visualizations, df, show_figures): "visualizations",
-                pool.submit(_worker_sankey, df, crosstabs_x_AttackType, show_figures): "sankey",
-                pool.submit(_worker_paracat, df, show_figures): "paracat",
-                pool.submit(_worker_statistics, df): "statistics",
-            }
-            for future in as_completed(futures):
-                name = futures[future]
+        # --- Stage 1: visualizations, diagrams, statistics --------------------
+        workers = [
+            ("visualizations", _worker_visualizations, (df, show_figures)),
+            ("sankey", _worker_sankey, (df, crosstabs_x_AttackType, show_figures)),
+            ("paracat", _worker_paracat, (df, show_figures)),
+            ("statistics", _worker_statistics, (df,)),
+        ]
+        if sequential:
+            print("Running EDA visualizations & statistics sequentially...")
+            for name, func, args in workers:
+                mon.stage = name
                 try:
-                    result = future.result()
+                    result = func(*args)
                     print(f"  [{name}] {result}")
                 except Exception as exc:
                     print(f"  [{name}] failed: {exc}")
+        else:
+            mon.stage = "viz + stats"
+            print(f"Running EDA visualizations & statistics ({profile.pipeline_workers} workers)...")
+            with ThreadPoolExecutor(max_workers=profile.pipeline_workers) as pool:
+                futures = {
+                    pool.submit(func, *args): name
+                    for name, func, args in workers
+                }
+                for future in as_completed(futures):
+                    name = futures[future]
+                    try:
+                        result = future.result()
+                        print(f"  [{name}] {result}")
+                    except Exception as exc:
+                        print(f"  [{name}] failed: {exc}")
 
         # Save pre-model checkpoint
+        mon.stage = "saving cache"
         print("Saving pre-model cache...")
         # Coerce mixed-type object columns so pyarrow can serialize them
         for col in df.columns:
@@ -192,6 +257,7 @@ def main():
     )
 
     # --- Logistic Regression ---
+    mon.stage = "logistic reg."
     y_pred_logit, df = modelling(
         df,
         crosstabs_x_AttackType,
@@ -201,6 +267,7 @@ def main():
 
     # --- Random Forest ---
     # modelling() clears crosstabs internally, so pass a fresh copy
+    mon.stage = "random forest"
     y_pred_rf, df = modelling(
         df,
         copy.deepcopy(crosstabs_x_AttackType),
@@ -211,20 +278,35 @@ def main():
     if model_only:
         config.SHOW_FIGURES = False
 
-    # --- Parallel stage 2: post-model tasks --------------------------------
-    print("Running post-model tasks in parallel...")
-    with ThreadPoolExecutor() as pool:
-        futures = {
-            pool.submit(_worker_interpretation, df, show_figures): "interpretation",
-            pool.submit(_worker_export, df, Path(__file__).resolve().parent): "export",
-        }
-        for future in as_completed(futures):
-            name = futures[future]
+    # --- Stage 2: post-model tasks -------------------------------------------
+    post_workers = [
+        ("interpretation", _worker_interpretation, (df, show_figures)),
+        ("export", _worker_export, (df, Path(__file__).resolve().parent)),
+    ]
+    if sequential:
+        print("Running post-model tasks sequentially...")
+        for name, func, args in post_workers:
+            mon.stage = name
             try:
-                result = future.result()
+                result = func(*args)
                 print(f"  [{name}] {result}")
             except Exception as exc:
                 print(f"  [{name}] failed: {exc}")
+    else:
+        mon.stage = "post-model"
+        print(f"Running post-model tasks ({profile.pipeline_workers} workers)...")
+        with ThreadPoolExecutor(max_workers=profile.pipeline_workers) as pool:
+            futures = {
+                pool.submit(func, *args): name
+                for name, func, args in post_workers
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    result = future.result()
+                    print(f"  [{name}] {result}")
+                except Exception as exc:
+                    print(f"  [{name}] failed: {exc}")
 
 
 if __name__ == "__main__":

@@ -14,10 +14,16 @@ from pathlib import Path
 import pandas as pd
 from user_agents import parse as ua_parse
 
-from src.utilities.config import geoIP
+import geoip2.database
+
+from src.utilities.config import GEOIP_PATH
 
 # Number of workers: max logical cores - 2, minimum 1
 MAX_WORKERS = max(1, (os.cpu_count() or 4) - 2)
+
+# When True, ip_to_coords_parallel and parse_device_info_parallel run
+# lookups on the main thread instead of spawning executor pools.
+SEQUENTIAL_MODE = False
 
 # Cache directory
 CACHE_DIR = Path("data/.cache")
@@ -28,6 +34,28 @@ UA_CACHE_FILE = CACHE_DIR / "ua_parse_cache.json"
 
 # Sentinel used to represent pd.NA in JSON (JSON has no NA concept)
 _NA = "__NA__"
+
+# GeoIP2 City database reader (used for lat/lon + country/city lookups)
+_CITY_DB = Path(GEOIP_PATH) / "GeoLite2-City.mmdb"
+_COUNTRY_DB = Path(GEOIP_PATH) / "GeoLite2-Country.mmdb"
+
+_city_reader = None
+_country_reader = None
+
+if _CITY_DB.exists():
+    _city_reader = geoip2.database.Reader(str(_CITY_DB))
+elif _COUNTRY_DB.exists():
+    _country_reader = geoip2.database.Reader(str(_COUNTRY_DB))
+    print(
+        f"WARNING: {_CITY_DB} not found — lat/lon lookups will return NA. "
+        f"Download GeoLite2-City.mmdb from https://dev.maxmind.com/geoip/geolite2-free-geolocation-data "
+        f"and place it in '{GEOIP_PATH}/'."
+    )
+else:
+    print(
+        f"WARNING: No GeoIP2 databases found in '{GEOIP_PATH}/'. "
+        f"IP geolocation will be unavailable."
+    )
 
 
 def _load_json_cache(path):
@@ -67,6 +95,10 @@ def _to_cache_val(v):
 def ip_to_coords(ip_address):
     """Convert an IP address to geographic coordinates and location info.
 
+    Uses geoip2.database.Reader directly (no Django/GDAL dependency).
+    Prefers the City database (has lat/lon + country + city).
+    Falls back to Country database (country only, no coordinates).
+
     Parameters
     ----------
     ip_address : str
@@ -79,18 +111,26 @@ def ip_to_coords(ip_address):
         Returns pd.NA for any fields that cannot be resolved.
     """
     lat, lon, country, city = pd.NA, pd.NA, pd.NA, pd.NA
-    try:
-        res = geoIP.geos(ip_address).wkt
-        lon_s, lat_s = res.replace("(", "").replace(")", "").split()[1:]
-        lat, lon = lat_s, lon_s
-    except Exception:
-        pass
-    try:
-        res = geoIP.city(ip_address)
-        country = res["country_name"]
-        city = res["city"]
-    except Exception:
-        pass
+    if _city_reader is not None:
+        try:
+            res = _city_reader.city(ip_address)
+            if res.location.latitude is not None:
+                lat = res.location.latitude
+            if res.location.longitude is not None:
+                lon = res.location.longitude
+            if res.country.name is not None:
+                country = res.country.name
+            if res.city.name is not None:
+                city = res.city.name
+        except Exception:
+            pass
+    elif _country_reader is not None:
+        try:
+            res = _country_reader.country(ip_address)
+            if res.country.name is not None:
+                country = res.country.name
+        except Exception:
+            pass
     return (lat, lon, country, city)
 
 
@@ -135,28 +175,28 @@ def ip_to_coords_parallel(series):
 
     if to_lookup:
         new_cache_entries = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_to_ip = {
-                executor.submit(ip_to_coords, ip): ip for ip in to_lookup
-            }
-            done_count = 0
-            for future in as_completed(future_to_ip):
-                ip = future_to_ip[future]
-                result = future.result()
-                # Assign result to all positions with this IP
+
+        if SEQUENTIAL_MODE:
+            for ip in to_lookup:
+                result = ip_to_coords(ip)
                 for pos in to_lookup[ip]:
                     results[pos] = result
                 new_cache_entries[ip] = tuple(_to_cache_val(v) for v in result)
-                done_count += 1
-                # if done_count % 5000 == 0:
-                # print(f"  IP geolocation: {done_count}/{unique_to_lookup} resolved")
-
-        # print(f"  IP geolocation: {unique_to_lookup}/{unique_to_lookup} resolved")
+        else:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_ip = {
+                    executor.submit(ip_to_coords, ip): ip for ip in to_lookup
+                }
+                for future in as_completed(future_to_ip):
+                    ip = future_to_ip[future]
+                    result = future.result()
+                    for pos in to_lookup[ip]:
+                        results[pos] = result
+                    new_cache_entries[ip] = tuple(_to_cache_val(v) for v in result)
 
         # Update and save cache
         cache.update(new_cache_entries)
         _save_json_cache(IP_CACHE_FILE, cache)
-        # print(f"  IP cache saved ({len(cache)} total entries)")
 
     return pd.DataFrame(
         results,
@@ -360,30 +400,31 @@ def parse_device_info_parallel(series):
     if to_parse:
         new_cache_entries = {}
         ua_strings = list(to_parse.keys())
-        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_to_key = {
-                executor.submit(_parse_ua_string, ua_str): ua_str
-                for ua_str in ua_strings
-            }
-            done_count = 0
-            for future in as_completed(future_to_key):
-                ua_str = future_to_key[future]
-                raw_result = future.result()  # contains None, not pd.NA
+
+        if SEQUENTIAL_MODE:
+            for ua_str in ua_strings:
+                raw_result = _parse_ua_string(ua_str)
                 result = _none_to_na(raw_result)
-                # Assign result to all positions with this UA string
                 for pos in to_parse[ua_str]:
                     results[pos] = result
                 new_cache_entries[ua_str] = tuple(_to_cache_val(v) for v in result)
-                done_count += 1
-                # if done_count % 5000 == 0:
-                # print(f"  UA parsing: {done_count}/{unique_to_parse} resolved")
-
-        # print(f"  UA parsing: {unique_to_parse}/{unique_to_parse} resolved")
+        else:
+            with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_key = {
+                    executor.submit(_parse_ua_string, ua_str): ua_str
+                    for ua_str in ua_strings
+                }
+                for future in as_completed(future_to_key):
+                    ua_str = future_to_key[future]
+                    raw_result = future.result()  # contains None, not pd.NA
+                    result = _none_to_na(raw_result)
+                    for pos in to_parse[ua_str]:
+                        results[pos] = result
+                    new_cache_entries[ua_str] = tuple(_to_cache_val(v) for v in result)
 
         # Update and save cache
         cache.update(new_cache_entries)
         _save_json_cache(UA_CACHE_FILE, cache)
-        # print(f"  UA cache saved ({len(cache)} total entries)")
 
     return pd.DataFrame(results, index=series.index, columns=_UA_COLUMNS)
 

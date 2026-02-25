@@ -1,25 +1,25 @@
 """Configuration, environment setup, and data loading for the cybersecurity EDA pipeline."""
 
 import os
+from pathlib import Path
 
-import django
-import geoip2.database  # noqa: F401
-import pandas as pd
-import plotly.io
+# GDAL configuration for geospatial operations — must be set before any Django import
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+GDAL_LIBRARY_PATH = os.environ.get(
+    "GDAL_LIBRARY_PATH",
+    str(_PROJECT_ROOT / ".pixi" / "envs" / "default" / "Library" / "bin" / "gdal.dll"),
+)
+os.environ["GDAL_LIBRARY_PATH"] = GDAL_LIBRARY_PATH
+
+import django  # noqa: E402
+import geoip2.database  # noqa: E402, F401
+import pandas as pd  # noqa: E402
+import plotly.io  # noqa: E402
 
 # Disable Arrow-backed string inference (pandas 3.x default).
 # The pipeline assigns integers into string columns, which Arrow strings reject.
 pd.options.future.infer_string = False
-from django.conf import settings
-
-
-# GDAL configuration for geospatial operations
-# Adjust path and DLL name for your environment
-GDAL_LIBRARY_PATH = os.environ.get(
-    "GDAL_LIBRARY_PATH",
-    "C:/Users/KalooIna/anaconda3/envs/cybersecurity_attacks/Library/bin/gdal311.dll",
-)
-os.environ["GDAL_LIBRARY_PATH"] = GDAL_LIBRARY_PATH
+from django.conf import settings  # noqa: E402
 
 # Plotly renderer configuration
 plotly.io.renderers.default = "browser"
@@ -34,11 +34,12 @@ def show_fig(fig):
         fig.show()
 
 # Django GeoIP2 settings
-GEOIP_PATH = "data/geolite2_db"
+GEOIP_PATH = "geolite2_db"
 
 if not settings.configured:
     settings.configure(
         GEOIP_PATH=GEOIP_PATH,
+        GDAL_LIBRARY_PATH=GDAL_LIBRARY_PATH,
         INSTALLED_APPS=["django.contrib.gis"],
     )
     django.setup()
