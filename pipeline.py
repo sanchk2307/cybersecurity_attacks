@@ -25,7 +25,7 @@ import src.utilities.config as config
 from src.utilities.config import load_data
 from src.utilities.diagrams import paracat_diag, sankey_diag
 from src.eda_pipeline import run_eda
-from src.modelling import modelling
+from src.modelling import modelling, ports_modelling
 from src.utilities.statistical_analysis import run_chi_square_test, run_mcc_analysis
 from src.utilities.visualization import (
     plot_geo_attack_types,
@@ -163,7 +163,7 @@ def main():
 
     with mon:
         _run_pipeline(show_figures, model_only, sequential or profile.sequential, profile, mon)
-
+        _run_ports_pipeline(mon)
 
 def _run_pipeline(show_figures, model_only, sequential, profile, mon):
     """Core pipeline logic, separated so the monitor can wrap it."""
@@ -321,6 +321,16 @@ def _run_pipeline(show_figures, model_only, sequential, profile, mon):
                 except Exception as exc:
                     print(f"  [{name}] failed: {exc}")
 
+# TODO: Check parameters to add for multi threading
+def _run_ports_pipeline(mon):
+    # Data loading - we have to do this again since the cached data will be modified for the other model
+    mon.stage = "loading data"
+    df_original, _ = load_data()
+
+    mon.stage = "extra trees"
+    y_pred_et, df = ports_modelling(df_original)
+
+    # mon.stage = "post-model"
 
 if __name__ == "__main__":
     main()

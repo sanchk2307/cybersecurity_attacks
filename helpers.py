@@ -242,6 +242,137 @@ def engineer_features_for_new_row(df_raw, model_data):
     X = np.nan_to_num(X, nan=0.0)
     return X
 
+# ============================================================
+# ENGINEER FEATURES FOR NEW ROW FOR THE PORTS MODEL
+# ============================================================
+def ports_engineer_features_for_new_row(df_raw, model_data):
+    """
+    Takes a raw row (all 25 columns) from the dataset
+    and transforms it into the feature vector the model expects.
+    This runs in the background - the user never sees this.
+    """
+    df = df_raw.copy()
+
+    # --- Binary columns: NaN = 0, value = 1 ---
+    for col in [
+        "Malware Indicators",
+        "Alerts/Warnings",
+        "Firewall Logs",
+        "IDS/IPS Alerts",
+    ]:
+        if col in df.columns:
+            df[col] = df[col].notna().astype(int)
+        else:
+            df[col] = 0
+
+    if "Proxy Information" in df.columns:
+        df["has_proxy"] = df["Proxy Information"].notna().astype(int)
+    else:
+        df["has_proxy"] = 0
+
+    # --- Timestamp features ---
+    if "Timestamp" in df.columns:
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+        df["hour"] = df["Timestamp"].dt.hour.fillna(12).astype(int)
+        df["dayofweek"] = df["Timestamp"].dt.dayofweek.fillna(0).astype(int)
+        df["is_weekend"] = (df["dayofweek"] >= 5).astype(int)
+    else:
+        df["hour"], df["dayofweek"], df["is_weekend"] = 12, 0, 0
+
+    # --- Port features ---
+    def port_cat(port):
+        try:
+            port = int(port)
+            if port <= 1023:
+                return "wellknown"
+            elif port <= 49151:
+                return "registered"
+            else:
+                return "dynamic"
+        except:
+            return "registered"
+
+    df["src_port_cat"] = df["Source Port"].apply(port_cat)
+    df["dst_port_cat"] = df["Destination Port"].apply(port_cat)
+    df["port_diff"] = abs(
+        df["Source Port"].astype(float) - df["Destination Port"].astype(float)
+    )
+
+    # --- Device Information parsing ---
+    if "Device Information" in df.columns:
+        df["os_family"] = df["Device Information"].apply(
+            lambda x: ua_parse(str(x)).os.family
+        )
+        df["browser_family"] = df["Device Information"].apply(
+            lambda x: ua_parse(str(x)).browser.family
+        )
+        df["device_type"] = df["Device Information"].apply(
+            lambda x: (
+                "Mobile"
+                if ua_parse(str(x)).is_mobile
+                else (
+                    "Tablet"
+                    if ua_parse(str(x)).is_tablet
+                    else ("PC" if ua_parse(str(x)).is_pc else "Other")
+                )
+            )
+        )
+    else:
+        df["os_family"], df["browser_family"], df["device_type"] = (
+            "Windows",
+            "Chrome",
+            "PC",
+        )
+
+    # --- Total alerts ---
+    df["total_alerts"] = (
+        df["Malware Indicators"]
+        + df["Alerts/Warnings"]
+        + df["Firewall Logs"]
+        + df["IDS/IPS Alerts"]
+    )
+
+    # --- Target encoding (from saved mappings) ---
+    src_port_means = model_data["src_port_means"]
+    dst_port_means = model_data["dst_port_means"]
+    global_mean = 1.0
+
+    df["Source Port_te"] = (
+        df["Source Port"].astype(int).map(src_port_means).fillna(global_mean)
+    )
+    df["Destination Port_te"] = (
+        df["Destination Port"].astype(int).map(dst_port_means).fillna(global_mean)
+    )
+
+    # --- Categorical target encoding (low impact, use global mean) ---
+    te_cat_cols = [
+        "Protocol_te",
+        "Packet Type_te",
+        "Traffic Type_te",
+        "Attack Signature_te",
+        "Action Taken_te",
+        "Severity Level_te",
+        "Network Segment_te",
+        "Log Source_te",
+        "src_port_cat_te",
+        "dst_port_cat_te",
+        "os_family_te",
+        "browser_family_te",
+        "device_type_te",
+    ]
+    for col in te_cat_cols:
+        df[col] = global_mean
+
+    # --- Build feature vector in the exact order the model expects ---
+    feature_cols = model_data["X_cols"]
+    for col in feature_cols:
+        if col not in df.columns:
+            df[col] = 0
+
+    X = df[feature_cols].values.astype(float)
+    X = np.nan_to_num(X, nan=0.0)
+    return X
+
 def dynamic_threshold(row, attype, dynamic_threshold_pars):
     n1, d1, n2, d2 = dynamic_threshold_pars
     a = (d2 - d1) / (n2 - n1)
