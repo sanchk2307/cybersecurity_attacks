@@ -1,3 +1,5 @@
+from datetime import datetime, date
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,38 +13,81 @@ import hashlib
 from pipeline import main as run_pipeline
 import sys
 
+# Import validation functions
+from src.utilities.validation import (
+    validate_timestamp,
+    validate_ip_address,
+    validate_ip_optional,
+    validate_port,
+    validate_packet_length,
+    validate_anomaly_score,
+    validate_user_agent,
+    validate_time_hms,
+    validate_dropdown,
+    validate_csv_row,
+)
+
+
+def show_validation_error(message):
+    """Display validation error in red, small text."""
+    st.markdown(f"<small style='color: red;'>{message}</small>", unsafe_allow_html=True)
 
 # ============================================================
 # PAGE CONFIG
 # ============================================================
 st.set_page_config(page_title="Cyber Attack Detector", page_icon="🛡️", layout="wide")
 
-
 # ============================================================
 # LOAD MODEL & DATA
 # ============================================================
+# @st.cache_resource
+# def load_model(model_type):
+#     try:
+#         with open(f"models/{model_type}_model.pkl", "rb") as f:
+#             return pickle.load(f)
+#     except FileNotFoundError:
+#         sys.argv = "--no-figures --sequential"
+#         st.error(f"Model file for {model_type} not found.")
+#         run_pipeline()  # Run the pipeline to create the model if not found
+#         with open(f"models/{model_type}_model.pkl", "rb") as f:
+#             return pickle.load(f)
+
 @st.cache_resource
-def load_model(model_type):
+def load_model(model_type: str):
+    model_path = f"models/{model_type}_model.pkl"
+ 
+    # First attempt: load existing model if present
     try:
         with open(f"models/{model_type}_model.pkl", "rb") as f:
             return pickle.load(f)
     except FileNotFoundError:
-        sys.argv = "--no-figures --sequential"
-        st.error(f"Model file for {model_type} not found.")
-        run_pipeline()  # Run the pipeline to create the model if not found
-        with open(f"models/{model_type}_model.pkl", "rb") as f:
+        # Display error only after running pipeline to create the model
+        pass
+ 
+    # If model is missing – run the pipeline to create it.
+    # Use sequential, no‑figure mode to be lighter on resources.
+    sys.argv = ["--no-figures", "--sequential"]
+    with st.spinner(f"Training '{model_type}' model. This can take a few minutes..."):
+        run_pipeline()
+ 
+    # Second attempt: load the freshly trained model.
+    try:
+        with open(model_path, "rb") as f:
             return pickle.load(f)
-
+    except FileNotFoundError:
+        st.error(
+            f"Model file for `{model_type}` not found even after running the pipeline. "
+            "Please check that training completed successfully."
+        )
+        raise
 
 @st.cache_data
 def load_dataset():
     return pd.read_csv("data/cybersecurity_attacks.csv")
 
-
 # ============================================================
 # FEATURE ENGINEERING PIPELINE AND HELPER FUNCTIONS ON USER INPUT
 # ============================================================
-
 
 def _predict_batch(df_input, feature_fn, model, target_names):
     """
@@ -62,7 +107,6 @@ def _predict_batch(df_input, feature_fn, model, target_names):
         for i in range(len(predictions))
     ]
     return df_output, pred_labels, probabilities
-
 
 def _render_batch_results(df_output, df_upload, pred_labels, key_suffix=""):
     """
@@ -116,7 +160,6 @@ def _render_batch_results(df_output, df_upload, pred_labels, key_suffix=""):
         "text/csv",
         key=f"download_{key_suffix}",
     )
-
 
 # ============================================================
 # RUNNING PREDICTIONS
@@ -207,13 +250,12 @@ def run_predictions(model_type, tab):
 
         show_prediction(pred_label, confidence, probabilities, target_names)
 
-
 # ============================================================
 # DISPLAY PREDICTION RESULT
 # ============================================================
 def show_prediction(pred_label, confidence, probabilities, target_names):
-    colors = {"DDoS": "#FF4B4B", "Intrusion": "#FFA500", "Malware": "#00CC66"}
-    icons = {"DDoS": "🔴", "Intrusion": "🟡", "Malware": "🟢"}
+    colors = {"DDoS": "#3B82F6", "Intrusion": "#F59E0B", "Malware": "#10B981"}
+    icons = {"DDoS": "🌊", "Intrusion": "🕵️", "Malware": "🦠"}
 
     color = colors.get(pred_label, "#888888")
     icon = icons.get(pred_label, "⚪")
@@ -244,7 +286,6 @@ def show_prediction(pred_label, confidence, probabilities, target_names):
     for i, name in enumerate(target_names):
         pct = float(probabilities[i]) * 100
         st.progress(float(probabilities[i]), text=f"{name}: {pct:.1f}%")
-
 
 # ============================================================
 # APP HEADER
@@ -285,6 +326,7 @@ with st.sidebar:
         format_func=lambda x: x[1],
         index=0,
         key="model_select",
+        disabled=False  # Locksto dropdown values only
     )
     selected_model_type = model_options[0]
     try:
@@ -312,9 +354,22 @@ with st.sidebar:
     with st.expander("📈 ROC Curve", expanded=False):
         fig_roc = model_data.get("fig_roc")
         if fig_roc is not None:
+            # Ensure legend shows AUC with only 2 digits after the decimal, even if the
+            # figure comes from an older pickled model.
+            auc_re = re.compile(r"^(?P<label>.*)\(\s*AUC\s*=\s*(?P<auc>[0-9]*\.?[0-9]+)\s*\)\s*$")
+            for tr in fig_roc.data:
+                if getattr(tr, "name", "") == "Random":
+                    continue
+                m = auc_re.match(getattr(tr, "name", "") or "")
+                if m:
+                    label = m.group("label").rstrip()
+                    auc_val = float(m.group("auc"))
+                    tr.name = f"{label}(AUC = {auc_val:.2f})"
             st.plotly_chart(fig_roc, use_container_width=True)
         else:
             st.info("Not available.")
+
+
 
     st.markdown("---")
     st.subheader("Pipeline")
@@ -354,6 +409,7 @@ with tab1:
         st.session_state.setdefault("uploaded_df", None)
         st.session_state.setdefault("uploaded_file_hash", None)
         st.session_state.setdefault("current_page", 1)
+        st.session_state.setdefault("csv_validation_errors", [])
 
         # We reload the file if the name, size or hash changes
         file_bytes = uploaded_file.getvalue()
@@ -362,6 +418,7 @@ with tab1:
             st.session_state.uploaded_df = pd.read_csv(uploaded_file)
             st.session_state.uploaded_file_hash = file_hash
             st.session_state.current_page = 1
+            st.session_state.csv_validation_errors = []  # Reset errors on new file
 
         df_upload = st.session_state.uploaded_df
         st.write(f"✅ **{len(df_upload)} rows loaded**")
@@ -381,16 +438,30 @@ with tab1:
         )
 
         df_temp = df_upload.iloc[start_idx:end_idx].copy()
+        
+        # Reset index to start from 1 for display
+        df_temp_display = df_temp.reset_index(drop=True)
+        df_temp_display.index = df_temp_display.index + 1
+        
         edited_df_temp = st.data_editor(
-            df_temp,
+            df_temp_display,
             use_container_width=True,
             num_rows="fixed",
             key=f"df_edit_page_{page}",
         )
 
-        # Make edits to the df in session_state
+        # Map edits back to the original df in session_state using original indices
+        edited_df_temp.index = edited_df_temp.index - 1  # Convert back to 0-indexed
         st.session_state.uploaded_df.loc[edited_df_temp.index, :] = edited_df_temp
         df_upload = st.session_state.uploaded_df
+        
+        # Real-time validation of all rows
+        validation_errors = []
+        for idx, row in df_upload.iterrows():
+            is_valid, error_msg = validate_csv_row(row, idx)
+            if not is_valid:
+                validation_errors.append(error_msg)
+        st.session_state.csv_validation_errors = validation_errors
 
         _, btn_prev, curr_page, btn_next = st.columns(
             [24, 1, 1, 1], vertical_alignment="center"
@@ -420,7 +491,18 @@ with tab1:
             ):
                 st.session_state.current_page += 1
 
-        if st.button("🔍 Run Prediction", key="btn_csv"):
+        # Display validation errors below button (real-time) with proper formatting
+        if st.session_state.csv_validation_errors:
+            # Count total field errors from all rows
+            total_field_errors = sum(err.count("•") for err in st.session_state.csv_validation_errors)
+            st.warning(f"⚠️ **{total_field_errors} validation issue(s) found in {len(st.session_state.csv_validation_errors)} row(s):**")
+            for err in st.session_state.csv_validation_errors[:15]:  # Show first 15 rows with errors
+                st.markdown(f"{err}")  # Already formatted with bullet points
+            if len(st.session_state.csv_validation_errors) > 15:
+                st.markdown(f"... and {len(st.session_state.csv_validation_errors) - 15} more row(s) with errors")
+        
+        if st.button("🔍 Run Prediction", key="btn_csv", disabled=bool(st.session_state.csv_validation_errors)):
+            st.success("✅ All rows validated successfully!")
             run_predictions(selected_model_type, 1)
 # ============================================================
 # TAB 2: PICK A ROW FROM DATASET
@@ -457,7 +539,6 @@ with tab2:
 # FUNCTIONS TO DISPLAY GEO-LOCATION OF IP ADDRESS
 # ============================================================
 
-
 @st.cache_data
 def geocode_ip(ip_address):
     """
@@ -479,39 +560,96 @@ def geocode_ip(ip_address):
         st.warning(f"Could not geocode {ip_address}: {str(e)}")
     return None, None, None, None
 
-
 # ============================================================
 # TAB 3: MANUAL INPUT
 # ============================================================
 with tab3:
     st.subheader("Manual input")
     st.caption("Fill in all fields manually. The pipeline handles the rest.")
+    
+    # Initialize session state for Tab 3 validation
+    if "tab3_validation" not in st.session_state:
+        st.session_state.tab3_validation = {}
+    
     col1, col2, col3 = st.columns(3)
     with col1:
         st.write("**Network Info**")
-        timestamp = st.text_input("Timestamp", value="2023-05-30 06:33:58")
-        source_ip = st.text_input("Source IP Address", value="103.216.15.12")
-        dest_ip = st.text_input("Destination IP Address", value="84.9.164.252")
-
+        
+        # Timestamp: Date picker + Time input (HH:MM:SS in single field)
+        st.write("Timestamp *")
+        col_date, col_time = st.columns(2)
+        with col_date:
+            timestamp_date = st.date_input(
+                "Date",
+                value=date(2023, 5, 30),
+                max_value=date.today(),
+                label_visibility="collapsed",
+                key="tab3_timestamp_date"
+            )
+        with col_time:
+            timestamp_time_str = st.text_input(
+                "Time (HH:MM:SS)",
+                value="06:33:58",
+                max_chars=8,
+                label_visibility="collapsed",
+                key="tab3_timestamp_time"
+            )
+        
+        # Validate time format (HH:MM:SS)
+        is_valid_time, err_time = validate_time_hms(timestamp_time_str)
+        if not is_valid_time:
+            show_validation_error(err_time)
+            st.session_state.tab3_validation["timestamp"] = False
+        else:
+            timestamp = f"{timestamp_date} {timestamp_time_str}"
+            is_valid_ts, err_ts = validate_timestamp(timestamp)
+            st.session_state.tab3_validation["timestamp"] = is_valid_ts
+            if not is_valid_ts:
+                show_validation_error(err_ts)
+        
+        # Source IP Address
+        st.write("Source IP Address *")
+        source_ip = st.text_input(
+            "Source IP",
+            value="103.216.15.12",
+            label_visibility="collapsed",
+            key="tab3_source_ip"
+        )
+        is_valid_src_ip, err_src_ip = validate_ip_address(source_ip)
+        st.session_state.tab3_validation["source_ip"] = is_valid_src_ip
+        if not is_valid_src_ip:
+            show_validation_error(err_src_ip)
+        
+        # Destination IP Address
+        st.write("Destination IP Address *")
+        dest_ip = st.text_input(
+            "Destination IP",
+            value="84.9.164.252",
+            label_visibility="collapsed",
+            key="tab3_dest_ip"
+        )
+        is_valid_dst_ip, err_dst_ip = validate_ip_address(dest_ip)
+        st.session_state.tab3_validation["dest_ip"] = is_valid_dst_ip
+        if not is_valid_dst_ip:
+            show_validation_error(err_dst_ip)
+        
         # Geocode IP addresses
-        src_lat, src_lon, src_city, src_country = geocode_ip(source_ip)
-        dst_lat, dst_lon, dst_city, dst_country = geocode_ip(dest_ip)
+        src_lat, src_lon, src_city, src_country = geocode_ip(source_ip) if is_valid_src_ip else (None, None, None, None)
+        dst_lat, dst_lon, dst_city, dst_country = geocode_ip(dest_ip) if is_valid_dst_ip else (None, None, None, None)
 
         # Build folium map
         if src_lat and dst_lat:
-            # Center map between the two points
             center_lat = (src_lat + dst_lat) / 2
             center_lon = (src_lon + dst_lon) / 2
         elif src_lat:
             center_lat, center_lon = src_lat, src_lon
         else:
-            center_lat, center_lon = 20.0, 0.0  # default world view
+            center_lat, center_lon = 20.0, 0.0
 
         m = folium.Map(
             location=[center_lat, center_lon], zoom_start=2, tiles="OpenStreetMap"
         )
 
-        # Source marker (red)
         if src_lat and src_lon:
             folium.CircleMarker(
                 location=[src_lat, src_lon],
@@ -523,7 +661,6 @@ with tab3:
                 tooltip=f"🔴 Source: {src_city}, {src_country}\nIP: {source_ip}",
             ).add_to(m)
 
-        # Destination marker (blue)
         if dst_lat and dst_lon:
             folium.CircleMarker(
                 location=[dst_lat, dst_lon],
@@ -535,7 +672,6 @@ with tab3:
                 tooltip=f"🔵 Destination: {dst_city}, {dst_country}\nIP: {dest_ip}",
             ).add_to(m)
 
-        # Draw a line between source and destination
         if src_lat and dst_lat:
             folium.PolyLine(
                 locations=[[src_lat, src_lon], [dst_lat, dst_lon]],
@@ -546,90 +682,365 @@ with tab3:
 
         st_folium(m, width=430, height=300)
 
+        # Source Port
+        st.write("Source Port *")
         source_port = st.number_input(
-            "Source Port", min_value=0, max_value=65535, value=31225
+            "Source Port",
+            # min_value=0,
+            # max_value=65535,
+            value=31225,
+            label_visibility="collapsed",
+            key="tab3_source_port"
         )
+        is_valid_src_port, err_src_port = validate_port(source_port)
+        st.session_state.tab3_validation["source_port"] = is_valid_src_port
+        if not is_valid_src_port:
+            show_validation_error(err_src_port)
+        
+        # Destination Port
+        st.write("Destination Port *")
         dest_port = st.number_input(
-            "Destination Port", min_value=0, max_value=65535, value=17616
+            "Destination Port",
+            # min_value=0,
+            # max_value=65535,
+            value=17616,
+            label_visibility="collapsed",
+            key="tab3_dest_port"
         )
-        protocol = st.selectbox("Protocol", ["TCP", "UDP", "ICMP"])
+        is_valid_dst_port, err_dst_port = validate_port(dest_port)
+        st.session_state.tab3_validation["dest_port"] = is_valid_dst_port
+        if not is_valid_dst_port:
+            show_validation_error(err_dst_port)
+        
+        # Protocol
+        st.write("Protocol *")
+        protocol_options = ["TCP", "UDP", "ICMP"]
+        protocol = st.selectbox(
+            "Protocol",
+            protocol_options,
+            label_visibility="collapsed",
+            key="tab3_protocol",
+            index=0
+        )
+        is_valid_protocol, err_protocol = validate_dropdown(protocol, protocol_options, "Protocol")
+        st.session_state.tab3_validation["protocol"] = is_valid_protocol
+        if not is_valid_protocol:
+            show_validation_error(err_protocol)
+        
+        # Packet Length
+        st.write("Packet Length *")
         packet_length = st.slider(
-            "Packet Length", min_value=0, max_value=2000, value=503, step=1
+            "Packet Length",
+            min_value=0,
+            max_value=2000,
+            value=503,
+            step=1,
+            label_visibility="collapsed",
+            key="tab3_packet_length"
         )
-        packet_type = st.selectbox("Packet Type", ["Data", "Control"])
-        traffic_type = st.selectbox("Traffic Type", ["HTTP", "DNS", "FTP"])
+        is_valid_pkt_len, err_pkt_len = validate_packet_length(packet_length)
+        st.session_state.tab3_validation["packet_length"] = is_valid_pkt_len
+        if not is_valid_pkt_len:
+            show_validation_error(err_pkt_len)
+        
+        # Packet Type
+        st.write("Packet Type *")
+        packet_type_options = ["Data", "Control"]
+        packet_type = st.selectbox(
+            "Packet Type",
+            packet_type_options,
+            label_visibility="collapsed",
+            key="tab3_packet_type",
+            index=0
+        )
+        is_valid_ptype, err_ptype = validate_dropdown(packet_type, packet_type_options, "Packet Type")
+        st.session_state.tab3_validation["packet_type"] = is_valid_ptype
+        if not is_valid_ptype:
+            show_validation_error(err_ptype)
+        
+        # Traffic Type
+        st.write("Traffic Type *")
+        traffic_type_options = ["HTTP", "DNS", "FTP"]
+        traffic_type = st.selectbox(
+            "Traffic Type",
+            traffic_type_options,
+            label_visibility="collapsed",
+            key="tab3_traffic_type",
+            index=0
+        )
+        is_valid_ttype, err_ttype = validate_dropdown(traffic_type, traffic_type_options, "Traffic Type")
+        st.session_state.tab3_validation["traffic_type"] = is_valid_ttype
+        if not is_valid_ttype:
+            show_validation_error(err_ttype)
 
     with col2:
         st.write("**Security Info**")
+        
+        # Anomaly Score
+        st.write("Anomaly Scores *")
         anomaly_score = st.slider(
-            "Anomaly Scores", min_value=0.0, max_value=100.0, value=28.67, step=0.01
+            "Anomaly Scores",
+            min_value=0.0,
+            max_value=100.0,
+            value=28.67,
+            step=0.01,
+            label_visibility="collapsed",
+            key="tab3_anomaly_score"
         )
-        severity = st.selectbox("Severity Level", ["Low", "Medium", "High"])
-        action = st.selectbox("Action Taken", ["Blocked", "Logged", "Ignored"])
+        is_valid_anom, err_anom = validate_anomaly_score(anomaly_score)
+        st.session_state.tab3_validation["anomaly_score"] = is_valid_anom
+        if not is_valid_anom:
+            show_validation_error(err_anom)
+        
+        # Severity
+        st.write("Severity Level *")
+        severity_options = ["Low", "Medium", "High"]
+        severity = st.selectbox(
+            "Severity Level",
+            severity_options,
+            label_visibility="collapsed",
+            key="tab3_severity",
+            index=0
+        )
+        is_valid_sev, err_sev = validate_dropdown(severity, severity_options, "Severity Level")
+        st.session_state.tab3_validation["severity"] = is_valid_sev
+        if not is_valid_sev:
+            show_validation_error(err_sev)
+        
+        # Action
+        st.write("Action Taken *")
+        action_options = ["Blocked", "Logged", "Ignored"]
+        action = st.selectbox(
+            "Action Taken",
+            action_options,
+            label_visibility="collapsed",
+            key="tab3_action",
+            index=0
+        )
+        is_valid_act, err_act = validate_dropdown(action, action_options, "Action Taken")
+        st.session_state.tab3_validation["action"] = is_valid_act
+        if not is_valid_act:
+            show_validation_error(err_act)
+        
+        # Attack Signature
+        st.write("Attack Signature *")
+        attack_sig_options = ["Known Pattern A", "Known Pattern B"]
         attack_sig = st.selectbox(
-            "Attack Signature", ["Known Pattern A", "Known Pattern B"]
+            "Attack Signature",
+            attack_sig_options,
+            label_visibility="collapsed",
+            key="tab3_attack_sig",
+            index=0
         )
+        is_valid_asig, err_asig = validate_dropdown(attack_sig, attack_sig_options, "Attack Signature")
+        st.session_state.tab3_validation["attack_sig"] = is_valid_asig
+        if not is_valid_asig:
+            show_validation_error(err_asig)
+        
+        # Network Segment
+        st.write("Network Segment *")
+        network_seg_options = ["Segment A", "Segment B", "Segment C"]
         network_seg = st.selectbox(
-            "Network Segment", ["Segment A", "Segment B", "Segment C"]
+            "Network Segment",
+            network_seg_options,
+            label_visibility="collapsed",
+            key="tab3_network_seg",
+            index=0
         )
-        log_source = st.selectbox("Log Source", ["Firewall", "Server"])
-        malware_ind = st.selectbox("Malware Indicators", ["None", "IoC Detected"])
-        alerts_warn = st.selectbox("Alerts/Warnings", ["None", "Alert Triggered"])
+        is_valid_nseg, err_nseg = validate_dropdown(network_seg, network_seg_options, "Network Segment")
+        st.session_state.tab3_validation["network_seg"] = is_valid_nseg
+        if not is_valid_nseg:
+            show_validation_error(err_nseg)
+        
+        # Log Source
+        st.write("Log Source *")
+        log_source_options = ["Firewall", "Server"]
+        log_source = st.selectbox(
+            "Log Source",
+            log_source_options,
+            label_visibility="collapsed",
+            key="tab3_log_source",
+            index=0
+        )
+        is_valid_lsrc, err_lsrc = validate_dropdown(log_source, log_source_options, "Log Source")
+        st.session_state.tab3_validation["log_source"] = is_valid_lsrc
+        if not is_valid_lsrc:
+            show_validation_error(err_lsrc)
+        
+        # Malware Indicators
+        st.write("Malware Indicators *")
+        malware_ind_options = ["None", "IoC Detected"]
+        malware_ind = st.selectbox(
+            "Malware Indicators",
+            malware_ind_options,
+            label_visibility="collapsed",
+            key="tab3_malware_ind",
+            index=0
+        )
+        is_valid_mw, err_mw = validate_dropdown(malware_ind, malware_ind_options, "Malware Indicators")
+        st.session_state.tab3_validation["malware_ind"] = is_valid_mw
+        if not is_valid_mw:
+            show_validation_error(err_mw)
+        
+        # Alerts/Warnings
+        st.write("Alerts/Warnings *")
+        alerts_warn_options = ["None", "Alert Triggered"]
+        alerts_warn = st.selectbox(
+            "Alerts/Warnings",
+            alerts_warn_options,
+            label_visibility="collapsed",
+            key="tab3_alerts_warn",
+            index=0
+        )
+        is_valid_aw, err_aw = validate_dropdown(alerts_warn, alerts_warn_options, "Alerts/Warnings")
+        st.session_state.tab3_validation["alerts_warn"] = is_valid_aw
+        if not is_valid_aw:
+            show_validation_error(err_aw)
 
     with col3:
         st.write("**Other Info**")
-        firewall_logs = st.selectbox("Firewall Logs", ["None", "Log Data"])
-        ids_alerts = st.selectbox("IDS/IPS Alerts", ["None", "Alert Data"])
-        user_info = st.text_input("User Information", value="Reyansh Dugal")
+        
+        # Firewall Logs
+        st.write("Firewall Logs *")
+        firewall_logs_options = ["None", "Log Data"]
+        firewall_logs = st.selectbox(
+            "Firewall Logs",
+            firewall_logs_options,
+            label_visibility="collapsed",
+            key="tab3_firewall_logs",
+            index=0
+        )
+        is_valid_fw, err_fw = validate_dropdown(firewall_logs, firewall_logs_options, "Firewall Logs")
+        st.session_state.tab3_validation["firewall_logs"] = is_valid_fw
+        if not is_valid_fw:
+            show_validation_error(err_fw)
+        
+        # IDS/IPS Alerts
+        st.write("IDS/IPS Alerts *")
+        ids_alerts_options = ["None", "Alert Data"]
+        ids_alerts = st.selectbox(
+            "IDS/IPS Alerts",
+            ids_alerts_options,
+            label_visibility="collapsed",
+            key="tab3_ids_alerts",
+            index=0
+        )
+        is_valid_ids, err_ids = validate_dropdown(ids_alerts, ids_alerts_options, "IDS/IPS Alerts")
+        st.session_state.tab3_validation["ids_alerts"] = is_valid_ids
+        if not is_valid_ids:
+            show_validation_error(err_ids)
+        
+        # User Information (Optional)
+        st.write("User Information")
+        user_info = st.text_input(
+            "User Information",
+            value="Reyansh Dugal",
+            label_visibility="collapsed",
+            key="tab3_user_info"
+        )
+        st.session_state.tab3_validation["user_info"] = True  # Optional
+        
+        # Device Information (Mandatory)
+        st.write("Device Information *")
         device_info = st.text_input(
             "Device Information",
             value="Mozilla/5.0 (compatible; MSIE 8.0; Windows NT 6.2; Trident/5.0)",
+            label_visibility="collapsed",
+            key="tab3_device_info"
         )
-        geo_location = st.text_input("Geo-location Data", value="Mumbai, Maharashtra")
-        proxy_info = st.text_input("Proxy Information (leave empty if none)", value="")
+        is_valid_ua, err_ua = validate_user_agent(device_info, is_optional=False)
+        st.session_state.tab3_validation["device_info"] = is_valid_ua
+        if not is_valid_ua:
+            show_validation_error(err_ua)
+        
+        # Geo-location Data (Optional)
+        st.write("Geo-location Data")
+        geo_location = st.text_input(
+            "Geo-location Data",
+            value="Mumbai, Maharashtra",
+            label_visibility="collapsed",
+            key="tab3_geo_location"
+        )
+        st.session_state.tab3_validation["geo_location"] = True  # Optional
+        
+        # Proxy Information (Optional)
+        st.write("Proxy Information")
+        proxy_info = st.text_input(
+            "Proxy Information (leave empty if none)",
+            value="",
+            label_visibility="collapsed",
+            key="tab3_proxy_info"
+        )
+        is_valid_proxy, err_proxy = validate_ip_optional(proxy_info)
+        st.session_state.tab3_validation["proxy_info"] = is_valid_proxy
+        if not is_valid_proxy:
+            show_validation_error(err_proxy)
+        
+        # Payload Data (Optional)
+        st.write("Payload Data")
         payload_data = st.text_area(
-            "Payload Data", value="Sample payload data", height=68
+            "Payload Data",
+            value="Sample payload data",
+            height=68,
+            label_visibility="collapsed",
+            key="tab3_payload_data"
         )
-
-    if st.button("🔍 Run Prediction", key="btn_manual"):
-        row = pd.DataFrame(
-            [
-                {
-                    "Timestamp": timestamp,
-                    "Source IP Address": source_ip,
-                    "Destination IP Address": dest_ip,
-                    "Source Port": source_port,
-                    "Destination Port": dest_port,
-                    "Protocol": protocol,
-                    "Packet Length": packet_length,
-                    "Packet Type": packet_type,
-                    "Traffic Type": traffic_type,
-                    "Payload Data": payload_data,
-                    "Malware Indicators": (
-                        "IoC Detected" if malware_ind == "IoC Detected" else np.nan
-                    ),
-                    "Anomaly Scores": anomaly_score,
-                    "Alerts/Warnings": (
-                        "Alert Triggered"
-                        if alerts_warn == "Alert Triggered"
-                        else np.nan
-                    ),
-                    "Attack Signature": attack_sig,
-                    "Action Taken": action,
-                    "Severity Level": severity,
-                    "User Information": user_info,
-                    "Device Information": device_info,
-                    "Network Segment": network_seg,
-                    "Geo-location Data": geo_location,
-                    "Proxy Information": proxy_info if proxy_info != "" else np.nan,
-                    "Firewall Logs": (
-                        "Log Data" if firewall_logs == "Log Data" else np.nan
-                    ),
-                    "IDS/IPS Alerts": (
-                        "Alert Data" if ids_alerts == "Alert Data" else np.nan
-                    ),
-                    "Log Source": log_source,
-                }
-            ]
-        )
-        run_predictions(selected_model_type, 3)
+        st.session_state.tab3_validation["payload_data"] = True  # Optional
+    
+    # Check if all mandatory validations pass
+    mandatory_fields = [
+        "timestamp", "source_ip", "dest_ip", "source_port", "dest_port", 
+        "protocol", "packet_length", "packet_type", "traffic_type",
+        "anomaly_score", "severity", "action", "attack_sig", "network_seg",
+        "log_source", "malware_ind", "alerts_warn", "firewall_logs", "ids_alerts", "device_info"
+    ]
+    
+    all_valid = all(st.session_state.tab3_validation.get(field, False) for field in mandatory_fields)
+    
+    # Show info message if button is disabled
+    if not all_valid:
+        st.info("ℹ️ Missing mandatory fields (marked with *) or invalid input")
+        st.button("🔍 Run Prediction", key="btn_manual", disabled=True)
+    else:
+        if st.button("🔍 Run Prediction", key="btn_manual", disabled=False):
+            row = pd.DataFrame(
+                [
+                    {
+                        "Timestamp": timestamp,
+                        "Source IP Address": source_ip,
+                        "Destination IP Address": dest_ip,
+                        "Source Port": source_port,
+                        "Destination Port": dest_port,
+                        "Protocol": protocol,
+                        "Packet Length": packet_length,
+                        "Packet Type": packet_type,
+                        "Traffic Type": traffic_type,
+                        "Payload Data": payload_data,
+                        "Malware Indicators": (
+                            "IoC Detected" if malware_ind == "IoC Detected" else np.nan
+                        ),
+                        "Anomaly Scores": anomaly_score,
+                        "Alerts/Warnings": (
+                            "Alert Triggered"
+                            if alerts_warn == "Alert Triggered"
+                            else np.nan
+                        ),
+                        "Attack Signature": attack_sig,
+                        "Action Taken": action,
+                        "Severity Level": severity,
+                        "User Information": user_info if user_info.strip() else np.nan,
+                        "Device Information": device_info if device_info.strip() else np.nan,
+                        "Network Segment": network_seg,
+                        "Geo-location Data": geo_location if geo_location.strip() else np.nan,
+                        "Proxy Information": proxy_info if proxy_info.strip() else np.nan,
+                        "Firewall Logs": (
+                            "Log Data" if firewall_logs == "Log Data" else np.nan
+                        ),
+                        "IDS/IPS Alerts": (
+                            "Alert Data" if ids_alerts == "Alert Data" else np.nan
+                        ),
+                        "Log Source": log_source,
+                    }
+                ]
+            )
+            run_predictions(selected_model_type, 3)
