@@ -6,8 +6,11 @@ import requests
 import folium
 from streamlit_folium import st_folium
 from user_agents import parse as ua_parse
-from helpers import engineer_features_for_new_row, ports_engineer_features_for_new_row
+from src.utilities.helpers import engineer_features_for_new_row, ports_engineer_features_for_new_row
 import hashlib
+from pipeline import main as run_pipeline
+import sys
+
 
 # ============================================================
 # PAGE CONFIG
@@ -20,17 +23,26 @@ st.set_page_config(page_title="Cyber Attack Detector", page_icon="🛡️", layo
 # ============================================================
 @st.cache_resource
 def load_model(model_type):
-    with open(f"models/{model_type}_model.pkl", "rb") as f:
-        return pickle.load(f)
+    try:
+        with open(f"models/{model_type}_model.pkl", "rb") as f:
+            return pickle.load(f)
+    except FileNotFoundError:
+        sys.argv = "--no-figures --sequential"
+        st.error(f"Model file for {model_type} not found.")
+        run_pipeline()  # Run the pipeline to create the model if not found
+        with open(f"models/{model_type}_model.pkl", "rb") as f:
+            return pickle.load(f)
 
 
 @st.cache_data
 def load_dataset():
     return pd.read_csv("data/cybersecurity_attacks.csv")
 
+
 # ============================================================
 # FEATURE ENGINEERING PIPELINE AND HELPER FUNCTIONS ON USER INPUT
 # ============================================================
+
 
 def _predict_batch(df_input, feature_fn, model, target_names):
     """
@@ -89,7 +101,7 @@ def _render_batch_results(df_output, df_upload, pred_labels, key_suffix=""):
     end_idx_output = min(start_idx_output + records_per_page_output, len(df_output))
 
     st.caption(
-        f"Showing records: **{start_idx_output+1}-{end_idx_output}** "
+        f"Showing records: **{start_idx_output + 1}-{end_idx_output}** "
         f"(page: **{page_output}** of **{number_of_pages_output}**)"
     )
 
@@ -98,8 +110,13 @@ def _render_batch_results(df_output, df_upload, pred_labels, key_suffix=""):
 
     csv_result = df_output.to_csv(index=False)
     st.download_button(
-        "📥 Download Results", csv_result, "predictions.csv", "text/csv", key=f"download_{key_suffix}"
+        "📥 Download Results",
+        csv_result,
+        "predictions.csv",
+        "text/csv",
+        key=f"download_{key_suffix}",
     )
+
 
 # ============================================================
 # RUNNING PREDICTIONS
@@ -190,6 +207,7 @@ def run_predictions(model_type, tab):
 
         show_prediction(pred_label, confidence, probabilities, target_names)
 
+
 # ============================================================
 # DISPLAY PREDICTION RESULT
 # ============================================================
@@ -226,6 +244,7 @@ def show_prediction(pred_label, confidence, probabilities, target_names):
     for i, name in enumerate(target_names):
         pct = float(probabilities[i]) * 100
         st.progress(float(probabilities[i]), text=f"{name}: {pct:.1f}%")
+
 
 # ============================================================
 # APP HEADER
@@ -358,7 +377,7 @@ with tab1:
         start_idx = (page - 1) * records_per_page
         end_idx = min(start_idx + records_per_page, len(df_upload))
         st.caption(
-            f"Showing records: **{start_idx+1}-{end_idx}** (page: **{page}** of **{number_of_pages}**)"
+            f"Showing records: **{start_idx + 1}-{end_idx}** (page: **{page}** of **{number_of_pages}**)"
         )
 
         df_temp = df_upload.iloc[start_idx:end_idx].copy()
@@ -414,7 +433,7 @@ with tab2:
 
     test_indices = model_data["test_indices"]
     test_position = st.number_input(
-        f"Row position in test set (0 – {len(test_indices)-1})",
+        f"Row position in test set (0 – {len(test_indices) - 1})",
         min_value=0,
         max_value=len(test_indices) - 1,
         value=0,
@@ -438,6 +457,7 @@ with tab2:
 # FUNCTIONS TO DISPLAY GEO-LOCATION OF IP ADDRESS
 # ============================================================
 
+
 @st.cache_data
 def geocode_ip(ip_address):
     """
@@ -459,6 +479,7 @@ def geocode_ip(ip_address):
         st.warning(f"Could not geocode {ip_address}: {str(e)}")
     return None, None, None, None
 
+
 # ============================================================
 # TAB 3: MANUAL INPUT
 # ============================================================
@@ -471,7 +492,7 @@ with tab3:
         timestamp = st.text_input("Timestamp", value="2023-05-30 06:33:58")
         source_ip = st.text_input("Source IP Address", value="103.216.15.12")
         dest_ip = st.text_input("Destination IP Address", value="84.9.164.252")
-        
+
         # Geocode IP addresses
         src_lat, src_lon, src_city, src_country = geocode_ip(source_ip)
         dst_lat, dst_lon, dst_city, dst_country = geocode_ip(dest_ip)
