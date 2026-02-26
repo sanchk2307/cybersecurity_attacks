@@ -6,6 +6,10 @@
 data/*
 !data/.gitkeep
 
+# Saved models
+models/*
+!models/.gitkeep
+
 # Cache directories
 **/*__pycache__*
 

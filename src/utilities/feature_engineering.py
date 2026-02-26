@@ -4,6 +4,8 @@ import math
 
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import StratifiedKFold
+from src.utilities.data_preparation import parse_device_info_parallel
 
 
 def dynamic_threshold(row, attype, dynamic_threshold_pars):
@@ -527,3 +529,73 @@ def feature_engineering(
         )
 
     return X_cols
+
+def ports_feature_engineering(df):
+    # Converting these columns to binary: NaN = 0, value = 1
+    df['Malware Indicators'] = df['Malware Indicators'].notna().astype(int)
+    df['Alerts/Warnings'] = df['Alerts/Warnings'].notna().astype(int)
+    df['Firewall Logs'] = df['Firewall Logs'].notna().astype(int)
+    df['IDS/IPS Alerts'] = df['IDS/IPS Alerts'].notna().astype(int)
+    df['has_proxy'] = df['Proxy Information'].notna().astype(int)
+
+    # Timestamp : extracting useful features
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    df['hour'] = df['Timestamp'].dt.hour
+    df['dayofweek'] = df['Timestamp'].dt.dayofweek
+    df['is_weekend'] = (df['dayofweek'] >= 5).astype(int)
+
+    # Dropping columns
+    drop_cols = ['Timestamp', 'Payload Data', 'User Information', 
+             'Proxy Information', 'Geo-location Data',
+             'Source IP Address', 'Destination IP Address']
+    df = df.drop(columns=drop_cols)
+
+    # Port categories
+    def _port_cat(port):
+        if port <= 1023: return 'wellknown'
+        elif port <= 49151: return 'registered'
+        else: return 'dynamic'
+    df['src_port_cat'] = df['Source Port'].apply(_port_cat)
+    df['dst_port_cat'] = df['Destination Port'].apply(_port_cat)
+    # Difference between ports
+    df['port_diff'] = abs(df['Source Port'] - df['Destination Port'])
+
+    # Device Information
+    ua_result = parse_device_info_parallel(df['Device Information'])
+    for ua_col in ua_result.columns:
+        df[ua_col] = ua_result[ua_col]
+
+    # Combination of alerts
+    df['total_alerts'] = (df['Malware Indicators'] + df['Alerts/Warnings'] + 
+                        df['Firewall Logs'] + df['IDS/IPS Alerts'])
+
+    # Applying Target Encoding to Categorical Features
+    te_cols = ['Protocol', 'Packet Type', 'Traffic Type', 'Attack Signature',
+            'Action Taken', 'Severity Level', 'Network Segment', 'Log Source',
+            'src_port_cat', 'dst_port_cat', 'OS family', 'Browser family', 'Device type']
+
+    for col in te_cols:
+        df[f'{col}_te'] = target_encode_cv(df, col)
+    
+    """Target Encoding on Source and Destination Ports
+    Source Port has ~30k unique values ​​=> each port receives its own score.
+    A port that frequently appears with DDoS attacks will have a different score
+    than a port that frequently appears with malware."""
+    src_port_means = df.groupby('Source Port')['target'].mean()
+    df['Source Port_te'] = df['Source Port'].map(src_port_means)
+    dst_port_means = df.groupby('Destination Port')['target'].mean()
+    df['Destination Port_te'] = df['Destination Port'].map(dst_port_means)
+
+    return df, src_port_means, dst_port_means
+
+def target_encode_cv(df, column, target_col='target', n_splits=5):
+    """Target encoding avec cross-validation pour éviter le leakage."""
+    encoded = pd.Series(np.nan, index=df.index)
+    global_mean = df[target_col].mean()
+    kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    
+    for train_idx, val_idx in kf.split(df, df[target_col]):
+        means = df.iloc[train_idx].groupby(column)[target_col].mean()
+        encoded.iloc[val_idx] = df.iloc[val_idx][column].map(means)
+    
+    return encoded.fillna(global_mean)

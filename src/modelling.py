@@ -14,7 +14,7 @@ from sklearn.preprocessing import LabelEncoder, label_binarize
 from src.utilities.config import show_fig
 
 MODELS_DIR = Path("models")
-from  src.utilities.feature_engineering import feature_engineering
+from  src.utilities.feature_engineering import feature_engineering, ports_feature_engineering
 
 
 def logit(attypes, x_train, x_test, y_train, y_test):
@@ -251,6 +251,7 @@ def model_metrics(attypes, model, x_train, x_test, y_train, y_test, y_pred, y_pr
         uniformtext_mode="hide",
     )
     show_fig(fig)
+    return accscore, fig_roc, fig
 
 
 def modelling(
@@ -300,6 +301,7 @@ def modelling(
 
     # Reset crosstabs for modelling
     crosstabs_x_AttackType.clear()
+    crosstabs_for_save = {}
 
     if not split_before_training:
         X_cols = feature_engineering(
@@ -310,6 +312,7 @@ def modelling(
             contvar_nobs_b_class,
             dynamic_threshold_pars,
         )
+        crosstabs_for_save = dict(crosstabs_x_AttackType)
         # Extract only the columns needed for modelling, then free the crosstabs
         x_vars = df[X_cols].copy()
         y_var = df["Attack Type"].copy()
@@ -341,6 +344,7 @@ def modelling(
             contvar_nobs_b_class,
             dynamic_threshold_pars,
         )
+        crosstabs_for_save = dict(crosstabs_x_AttackType)
         df_train = df_train.copy()
         df_test = df_test.copy()
 
@@ -360,15 +364,96 @@ def modelling(
         return None, df
 
     y_pred, y_prob = model_predictions(model, x_test)
-    model_metrics(
+    accscore, fig_roc, fig_cm = model_metrics(
         attypes, model, x_train, x_test, y_train, y_test, y_pred, y_prob
     )
+    test_indices = x_test.index if split_before_training == False else df_test.index
+
+    save_data = {
+        "model": model,
+        "label_encoder": y,
+        "target_names": y.classes_.tolist(),
+        "crosstabs_x_AttackType": crosstabs_for_save,
+        "X_cols": X_cols,
+        "df_transformed": df,
+        "test_indices": test_indices,    # original row indices from the test split
+        "threshold_floor": 37.5,
+        "dynamic_threshold_pars": [5, 100, 10, 37.5],
+        "fig_cm": fig_cm,
+        "fig_roc": fig_roc,
+        "accscore": accscore,
+    }
 
     # Save trained model
     MODELS_DIR.mkdir(exist_ok=True)
     model_path = MODELS_DIR / f"{model_type}_model.pkl"
     with open(model_path, "wb") as f:
-        pickle.dump(model, f)
+        pickle.dump(save_data, f)
+    print(f"Model saved to {model_path}")
+
+    return y_pred, df
+
+def ports_modelling(df, split_before_training = False):
+    attypes = df["Attack Type"].unique()
+    # Encoding the target
+    le = LabelEncoder()
+    df['target'] = le.fit_transform(df['Attack Type'])
+    target_names = le.classes_.tolist()
+
+    df, src_port_means, dst_port_means = ports_feature_engineering(df)
+
+    # Selecting the final features
+    feature_cols = (
+        # Numeric
+        ['Packet Length', 'Anomaly Scores', 'Source Port', 'Destination Port',
+        'port_diff', 'hour', 'dayofweek'] +
+        # Binary
+        ['Malware Indicators', 'Alerts/Warnings', 'Firewall Logs', 
+        'IDS/IPS Alerts', 'has_proxy', 'is_weekend', 'total_alerts'] +
+        # Target encoded
+        [col for col in df.columns if col.endswith('_te')]
+    )
+
+    X = df[feature_cols]
+    y = df['target']
+    # Managing potential NaNs
+    X = X.fillna(0)
+
+    X_train, X_test, y_train, y_test = skl.model_selection.train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    model = skl.ensemble.ExtraTreesClassifier(n_estimators=500, max_depth=20, 
+                                    min_samples_leaf=5, random_state=42, n_jobs=-1)
+    model.fit(X_train, y_train)
+    y_pred, y_prob = model_predictions(model, X_test)
+    accscore, fig_roc, fig_cm = model_metrics(
+        attypes, model, X_train, X_test, y_train, y_test, y_pred, y_prob
+    )
+
+    save_data = {
+        'model': model,
+        'label_encoder': le,
+        'target_names': target_names,
+        # "crosstabs_x_AttackType": crosstabs_x_AttackType,
+        'X_cols': feature_cols,
+        # "df_transformed": df,
+        "test_indices": X_test.index,    # original row indices from the test split
+        # "threshold_floor": 37.5,
+        # "dynamic_threshold_pars": [5, 100, 10, 37.5],
+        'src_port_means': src_port_means,
+        'dst_port_means': dst_port_means,
+        "fig_cm": fig_cm,
+        "fig_roc": fig_roc,
+        "accscore": accscore,
+    }
+
+    # Save trained model
+    model_type = "extra_trees"
+    MODELS_DIR.mkdir(exist_ok=True)
+    model_path = MODELS_DIR / f"{model_type}_model.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump(save_data, f)
     print(f"Model saved to {model_path}")
 
     return y_pred, df
